@@ -653,7 +653,7 @@ void LoadSettingsAndCheckModified (HWND hwndDlg, BOOL bOnlyCheckModified, BOOL* 
 	WipeAlgorithmId savedWipeAlgorithm = TC_WIPE_NONE;
 
 	if (!bOnlyCheckModified)
-		LoadSysEncSettings (hwndDlg);
+		LoadSysEncSettings ();
 
 	if (!bOnlyCheckModified && LoadNonSysInPlaceEncSettings (&savedWipeAlgorithm) != 0)
 		bInPlaceEncNonSysPending = TRUE;
@@ -705,6 +705,8 @@ void LoadSettingsAndCheckModified (HWND hwndDlg, BOOL bOnlyCheckModified, BOOL* 
 	if (!bOnlyCheckModified)
 		bPreserveTimestamp = defaultMountOptions.PreserveTimestamp;
 
+	ConfigReadCompareInt ("ShowDisconnectedNetworkDrives", FALSE, &bShowDisconnectedNetworkDrives, bOnlyCheckModified, pbSettingsModified);
+
 	ConfigReadCompareInt ("MountVolumesRemovable", FALSE, &defaultMountOptions.Removable, bOnlyCheckModified, pbSettingsModified);
 	ConfigReadCompareInt ("MountVolumesReadOnly", FALSE, &defaultMountOptions.ReadOnly, bOnlyCheckModified, pbSettingsModified);
 
@@ -737,7 +739,7 @@ void LoadSettingsAndCheckModified (HWND hwndDlg, BOOL bOnlyCheckModified, BOOL* 
 		// only check for last drive modification if history enabled
 		char szTmp[32] = {0};
 		LPARAM lLetter;
-		lLetter = GetSelectedLong (GetDlgItem (hwndDlg, IDC_DRIVELIST));
+		lLetter = GetSelectedLong (GetDlgItem (MainDlg, IDC_DRIVELIST));
 		if (LOWORD (lLetter) != 0xffff)
 			StringCbPrintfA (szTmp, sizeof(szTmp), "%lc:", (wchar_t) HIWORD (lLetter));
 
@@ -780,9 +782,9 @@ void LoadSettingsAndCheckModified (HWND hwndDlg, BOOL bOnlyCheckModified, BOOL* 
 	// History
 	if (bHistoryCmdLine != TRUE)
 	{
-		LoadCombo (GetDlgItem (hwndDlg, IDC_VOLUME), bHistory, bOnlyCheckModified, pbHistoryModified);
+		LoadCombo (GetDlgItem (MainDlg, IDC_VOLUME), bHistory, bOnlyCheckModified, pbHistoryModified);
 		if (!bOnlyCheckModified && CmdLineVolumeSpecified)
-			SetWindowText (GetDlgItem (hwndDlg, IDC_VOLUME), szFileName);
+			SetWindowText (GetDlgItem (MainDlg, IDC_VOLUME), szFileName);
 	}
 
 	// Mount Options
@@ -860,6 +862,7 @@ void SaveSettings (HWND hwndDlg)
 		ConfigWriteInt ("MountVolumesReadOnly",				defaultMountOptions.ReadOnly);
 		ConfigWriteInt ("MountVolumesRemovable",			defaultMountOptions.Removable);
 		ConfigWriteInt ("PreserveTimestamps",				defaultMountOptions.PreserveTimestamp);
+		ConfigWriteInt ("ShowDisconnectedNetworkDrives",bShowDisconnectedNetworkDrives);
 
 		ConfigWriteInt ("EnableBackgroundTask",				bEnableBkgTask);
 		ConfigWriteInt ("CloseBackgroundTaskOnNoVolumes",	bCloseBkgTaskWhenNoVolumes);
@@ -882,7 +885,7 @@ void SaveSettings (HWND hwndDlg)
 		if (bHistory)
 		{
 			// Drive Letter
-			lLetter = GetSelectedLong (GetDlgItem (hwndDlg, IDC_DRIVELIST));
+			lLetter = GetSelectedLong (GetDlgItem (MainDlg, IDC_DRIVELIST));
 			if (LOWORD (lLetter) != 0xffff)
 				StringCbPrintfA (szTmp, sizeof(szTmp), "%lc:", (wchar_t) HIWORD (lLetter));
 			ConfigWriteString ("LastSelectedDrive", szTmp);
@@ -928,7 +931,7 @@ void SaveSettings (HWND hwndDlg)
 	if (bHistoryChanged)
 	{
 		// History
-		DumpCombo (GetDlgItem (hwndDlg, IDC_VOLUME), IsButtonChecked (GetDlgItem (hwndDlg, IDC_NO_HISTORY)));
+		DumpCombo (GetDlgItem (MainDlg, IDC_VOLUME), IsButtonChecked (GetDlgItem (MainDlg, IDC_NO_HISTORY)));
 	}
 
 	NormalCursor ();
@@ -1454,7 +1457,7 @@ void LoadDriveLetters (HWND hwndDlg, HWND hTree, int drive)
 		AbortProcessSilent();
 	}
 
-	LastKnownLogicalDrives = dwUsedDrives = GetLogicalDrives ();
+	LastKnownLogicalDrives = dwUsedDrives = GetUsedLogicalDrives ();
 	if (dwUsedDrives == 0)
 			Warning ("DRIVELETTERS", hwndDlg);
 
@@ -3069,6 +3072,9 @@ BOOL CALLBACK PreferencesDlgProc (HWND hwndDlg, UINT msg, WPARAM wParam, LPARAM 
 			
 			SendMessage (GetDlgItem (hwndDlg, IDC_PRESERVE_TIMESTAMPS), BM_SETCHECK, 
 						defaultMountOptions.PreserveTimestamp ? BST_CHECKED:BST_UNCHECKED, 0);
+
+			SendMessage (GetDlgItem (hwndDlg, IDC_SHOW_DISCONNECTED_NETWORK_DRIVES), BM_SETCHECK, 
+				bShowDisconnectedNetworkDrives ? BST_CHECKED:BST_UNCHECKED, 0);
 			
 			SendMessage (GetDlgItem (hwndDlg, IDC_PREF_TEMP_CACHE_ON_MULTIPLE_MOUNT), BM_SETCHECK, 
 						bCacheDuringMultipleMount ? BST_CHECKED:BST_UNCHECKED, 0);
@@ -3183,6 +3189,7 @@ BOOL CALLBACK PreferencesDlgProc (HWND hwndDlg, UINT msg, WPARAM wParam, LPARAM 
 			bExplore						= IsButtonChecked (GetDlgItem (hwndDlg, IDC_PREF_OPEN_EXPLORER));	 
 			bUseDifferentTrayIconIfVolMounted = IsButtonChecked (GetDlgItem (hwndDlg, IDC_PREF_USE_DIFF_TRAY_ICON_IF_VOL_MOUNTED));	 
 			bPreserveTimestamp = defaultMountOptions.PreserveTimestamp = IsButtonChecked (GetDlgItem (hwndDlg, IDC_PRESERVE_TIMESTAMPS));	 
+			bShowDisconnectedNetworkDrives = IsButtonChecked (GetDlgItem (hwndDlg, IDC_SHOW_DISCONNECTED_NETWORK_DRIVES));	 
 			bCacheDuringMultipleMount	= IsButtonChecked (GetDlgItem (hwndDlg, IDC_PREF_TEMP_CACHE_ON_MULTIPLE_MOUNT));
 			bWipeCacheOnExit				= IsButtonChecked (GetDlgItem (hwndDlg, IDC_PREF_WIPE_CACHE_ON_EXIT));
 			bWipeCacheOnAutoDismount		= IsButtonChecked (GetDlgItem (hwndDlg, IDC_PREF_WIPE_CACHE_ON_AUTODISMOUNT));
@@ -5830,7 +5837,7 @@ static BOOL CheckMountList (HWND hwndDlg, BOOL bForceTaskBarUpdate)
 		return TRUE;
 	}
 
-	if (LastKnownLogicalDrives != GetLogicalDrives()
+	if (LastKnownLogicalDrives != GetUsedLogicalDrives()
 		|| memcmp (&LastKnownMountList, &current, sizeof (current)) != 0)
 	{
 		wchar_t selDrive;
@@ -6188,6 +6195,7 @@ BOOL CALLBACK MainDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 
 			// Set critical default options in case UsePreferences is false
 			bPreserveTimestamp = defaultMountOptions.PreserveTimestamp = TRUE;
+			bShowDisconnectedNetworkDrives = FALSE;
 
 			ResetWrongPwdRetryCount ();
 
@@ -6981,7 +6989,7 @@ BOOL CALLBACK MainDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 		return 1;
 
 	case TC_APPMSG_SYSENC_CONFIG_UPDATE:
-		LoadSysEncSettings (hwndDlg);
+		LoadSysEncSettings ();
 
 		// The wizard added VeraCrypt.exe to the system startup sequence or performed other operations that 
 		// require us to update our cached settings.
@@ -7006,7 +7014,7 @@ BOOL CALLBACK MainDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 
 				for (i = 0; i < 26; i++)
 				{
-					if ((vol->dbcv_unitmask & (1 << i)) && !(GetLogicalDrives() & (1 << i)))
+					if ((vol->dbcv_unitmask & (1 << i)) && !(GetUsedLogicalDrives() & (1 << i)))
 					{
 						for (m = 0; m < 26; m++)
 						{
@@ -7891,7 +7899,7 @@ BOOL CALLBACK MainDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 
 		if (lw == IDM_REFRESH_DRIVE_LETTERS)
 		{
-			DWORD driveMap = GetLogicalDrives ();
+			DWORD driveMap = GetUsedLogicalDrives ();
 			
 			WaitCursor ();
 
