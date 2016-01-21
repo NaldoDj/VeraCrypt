@@ -6,7 +6,7 @@
  Encryption for the Masses 2.02a, which is Copyright (c) 1998-2000 Paul Le Roux
  and which is governed by the 'License Agreement for Encryption for the Masses' 
  Modifications and additions to the original source code (contained in this file) 
- and all other portions of this file are Copyright (c) 2013-2015 IDRIX
+ and all other portions of this file are Copyright (c) 2013-2016 IDRIX
  and are governed by the Apache License 2.0 the full text of which is
  contained in the file License.txt included in VeraCrypt binary and source
  code distribution packages. */
@@ -25,6 +25,7 @@
 #include <stdlib.h>
 #include <time.h>
 #include <tchar.h>
+#include <Richedit.h>
 
 #include "Resource.h"
 
@@ -1151,14 +1152,14 @@ BOOL CALLBACK AboutDlgProc (HWND hwndDlg, UINT msg, WPARAM wParam, LPARAM lParam
 			L"Based on TrueCrypt 7.1a, freely available at http://www.truecrypt.org/ .\r\n\r\n"
 
 			L"Portions of this software:\r\n"
-			L"Copyright \xA9 2013-2015 IDRIX. All rights reserved.\r\n"
+			L"Copyright \xA9 2013-2016 IDRIX. All rights reserved.\r\n"
 			L"Copyright \xA9 2003-2012 TrueCrypt Developers Association. All Rights Reserved.\r\n"
 			L"Copyright \xA9 1998-2000 Paul Le Roux. All Rights Reserved.\r\n"
 			L"Copyright \xA9 1998-2008 Brian Gladman. All Rights Reserved.\r\n"
 			L"Copyright \xA9 2002-2004 Mark Adler. All Rights Reserved.\r\n\r\n"
 
 			L"This software as a whole:\r\n"
-			L"Copyright \xA9 2013-2015 IDRIX. All rights reserved.\r\n\r\n"
+			L"Copyright \xA9 2013-2016 IDRIX. All rights reserved.\r\n\r\n"
 
 			L"An IDRIX Release");
 
@@ -3271,7 +3272,12 @@ BOOL CALLBACK TextInfoDialogBoxDlgProc (HWND hwndDlg, UINT msg, WPARAM wParam, L
 				r = GetLegalNotices ();
 				if (r != NULL)
 				{
-					SetWindowTextA (GetDlgItem (hwndDlg, IDC_INFO_BOX_TEXT), r);
+					SETTEXTEX TextInfo = {0};
+
+					TextInfo.flags = ST_SELECTION;
+					TextInfo.codepage = CP_ACP;
+
+					SendMessage(GetDlgItem (hwndDlg, IDC_INFO_BOX_TEXT), EM_SETTEXTEX, (WPARAM)&TextInfo, (LPARAM)r);
 					free (r);
 				}
 				break;
