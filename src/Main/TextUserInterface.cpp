@@ -737,6 +737,7 @@ namespace VeraCrypt
 				ShowInfo (L" 4) Linux Ext3"); filesystems.push_back (VolumeCreationOptions::FilesystemType::Ext3);
 				ShowInfo (L" 5) Linux Ext4"); filesystems.push_back (VolumeCreationOptions::FilesystemType::Ext4);
 				ShowInfo (L" 6) NTFS");       filesystems.push_back (VolumeCreationOptions::FilesystemType::NTFS);
+				ShowInfo (L" 7) exFAT");      filesystems.push_back (VolumeCreationOptions::FilesystemType::exFAT);
 #elif defined (TC_MACOSX)
 				ShowInfo (L" 3) Mac OS Extended"); filesystems.push_back (VolumeCreationOptions::FilesystemType::MacOsExt);
 #elif defined (TC_FREEBSD) || defined (TC_SOLARIS)
@@ -832,6 +833,7 @@ namespace VeraCrypt
 			case VolumeCreationOptions::FilesystemType::MacOsExt:	fsFormatter = "newfs_hfs"; break;
 			case VolumeCreationOptions::FilesystemType::UFS:		fsFormatter = "newfs" ; break;
 			case VolumeCreationOptions::FilesystemType::NTFS:		fsFormatter = "mkfs.ntfs"; break;
+			case VolumeCreationOptions::FilesystemType::exFAT:		fsFormatter = "mkfs.exfat"; break;
 			default: throw ParameterIncorrect (SRC_POS);
 			}
 
@@ -882,6 +884,10 @@ namespace VeraCrypt
 
 			if (options->Filesystem == VolumeCreationOptions::FilesystemType::MacOsExt && options->Size >= 10 * BYTES_PER_MB)
 				args.push_back ("-J");
+
+			// Perform a quick NTFS formatting
+			if (options->Filesystem == VolumeCreationOptions::FilesystemType::NTFS)
+				args.push_back ("-f");
 
 			args.push_back (string (virtualDevice));
 
