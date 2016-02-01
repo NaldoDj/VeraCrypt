@@ -1380,13 +1380,14 @@
     <string lang="de" key="TB_PER_SEC">TB/s</string>
     <string lang="de" key="PB_PER_SEC">PB/s</string>
     <string lang="de" key="TRIPLE_DOT_GLYPH_ELLIPSIS">…</string>
-    <control lang="en" key="IDC_BOOT_LOADER_CACHE_PIM">Include &amp;PIM when caching pre-boot authentication password</control>
-    <control lang="en" key="IDC_PREF_CACHE_PIM">Include PIM when caching a password</control>
+    <control lang="de" key="IDC_BOOT_LOADER_CACHE_PIM">&amp;PIM beim Zwischenspeichern eines Pre-Boot Authentifikations-Passwortes einbeziehen</control>
+    <control lang="de" key="IDC_PREF_CACHE_PIM">PIM beim Zwischenspeichern eines Passwortes einbeziehen</control>
     <control lang="de" key="IDC_SHOW_DISCONNECTED_NETWORK_DRIVES">Getrennte Netzlaufwerke zum Einhängen verfügbar machen</control>
     <string lang="de" key="PASSWORD_UTF8_TOO_LONG">Das eingegebene Passwort ist zu lang: Kodiert mit UTF-8 überschreitet es 64 Byte.</string>
     <string lang="de" key="PASSWORD_UTF8_INVALID">Das eingegebene Passwort enthält Unicode-Zeichen, die nicht mit UTF-8 kodiert werden können.</string>
     <string lang="de" key="INIT_DLL">Fehler: Kann ein Systembibliothek nicht laden.</string>
-    <string lang="en" key="ERR_EXFAT_INVALID_VOLUME_SIZE">The volume file size specified in the command line is incompatible with selected exFAT filesystem.</string>
+    <string lang="de" key="ERR_EXFAT_INVALID_VOLUME_SIZE">Unzulässige Volume-Größe auf der Kommandozeile angegeben in Verbindung mit dem exFAT-Dateisystem.</string>
+    <control lang="en" key="IDT_ENTROPY_BAR">Randomness Collected From Mouse Movements</control>
   </localization>
   <!-- XML Schema -->
   <xs:schema attributeFormDefault="unqualified" elementFormDefault="qualified" xmlns:xs="http://www.w3.org/2001/XMLSchema">
