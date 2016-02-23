@@ -452,6 +452,7 @@ void OpenOnlineHelp ();
 BOOL GetPartitionInfo (const wchar_t *deviceName, PPARTITION_INFORMATION rpartInfo);
 BOOL GetDeviceInfo (const wchar_t *deviceName, DISK_PARTITION_INFO_STRUCT *info);
 BOOL GetDriveGeometry (const wchar_t *deviceName, PDISK_GEOMETRY diskGeometry);
+BOOL GetPhysicalDriveGeometry (int driveNumber, PDISK_GEOMETRY diskGeometry);
 BOOL IsVolumeDeviceHosted (const wchar_t *lpszDiskFile);
 int CompensateXDPI (int val);
 int CompensateYDPI (int val);
@@ -498,6 +499,7 @@ LSTATUS DeleteRegistryKey (HKEY, LPCTSTR);
 HIMAGELIST  CreateImageList(int cx, int cy, UINT flags, int cInitial, int cGrow);
 int AddBitmapToImageList(HIMAGELIST himl, HBITMAP hbmImage, HBITMAP hbmMask);
 HRESULT VCStrDupW(LPCWSTR psz, LPWSTR *ppwsz);
+void ProcessEntropyEstimate (HWND hProgress, DWORD* pdwInitialValue, DWORD dwCounter, DWORD dwMaxLevel, DWORD* pdwEntropy);
 
 #ifdef __cplusplus
 }

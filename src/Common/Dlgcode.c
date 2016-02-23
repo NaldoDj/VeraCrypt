@@ -53,6 +53,7 @@
 #include "Xml.h"
 #include "Xts.h"
 #include "Boot/Windows/BootCommon.h"
+#include "Progress.h"
 
 #ifdef TCMOUNT
 #include "Mount/Mount.h"
@@ -3421,7 +3422,9 @@ BOOL CALLBACK RawDevicesDlgProc (HWND hwndDlg, UINT msg, WPARAM wParam, LPARAM l
 				// Path
 				if (!device.IsPartition || device.DynamicVolume)
 				{
-					if (!device.Floppy && device.Size == 0)
+					if (!device.Floppy && (device.Size == 0) 
+						&& (device.IsPartition || device.Partitions.empty() || device.Partitions[0].Size == 0)
+						)
 						continue;
 
 					if (line > 1)
@@ -5409,6 +5412,7 @@ static BOOL CALLBACK RandomPoolEnrichementDlgProc (HWND hwndDlg, UINT msg, WPARA
 			hEntropyBar = GetDlgItem (hwndDlg, IDC_ENTROPY_BAR);
 			SendMessage (hEntropyBar, PBM_SETRANGE32, 0, maxEntropyLevel);
 			SendMessage (hEntropyBar, PBM_SETSTEP, 1, 0);
+			SendMessage (hEntropyBar, PBM_SETSTATE, PBST_ERROR, 0);
 			return 1;
 		}
 
@@ -5421,27 +5425,7 @@ static BOOL CALLBACK RandomPoolEnrichementDlgProc (HWND hwndDlg, UINT msg, WPARA
 
 			RandpeekBytes (hwndDlg, randPool, sizeof (randPool), &mouseEventsCounter);
 
-			/* conservative estimate: 1 mouse move event brings 1 bit of entropy
-			 * https://security.stackexchange.com/questions/32844/for-how-much-time-should-i-randomly-move-the-mouse-for-generating-encryption-key/32848#32848
-			 */
-			if (mouseEntropyGathered == 0xFFFFFFFF)
-			{
-				mouseEventsInitialCount = mouseEventsCounter;
-				mouseEntropyGathered = 0;
-			}
-			else
-			{
-				if (	mouseEntropyGathered < maxEntropyLevel 
-					&& (mouseEventsCounter >= mouseEventsInitialCount) 
-					&& (mouseEventsCounter - mouseEventsInitialCount) <= maxEntropyLevel)
-					mouseEntropyGathered = mouseEventsCounter - mouseEventsInitialCount;
-				else
-					mouseEntropyGathered = maxEntropyLevel;
-
-				SendMessage (hEntropyBar, PBM_SETPOS, 
-				(WPARAM) (mouseEntropyGathered),
-				0);
-			}
+			ProcessEntropyEstimate (hEntropyBar, &mouseEventsInitialCount, mouseEventsCounter, maxEntropyLevel, &mouseEntropyGathered);
 
 			if (memcmp (lastRandPool, randPool, sizeof(lastRandPool)) != 0)
 			{
@@ -5618,6 +5602,7 @@ BOOL CALLBACK KeyfileGeneratorDlgProc (HWND hwndDlg, UINT msg, WPARAM wParam, LP
 			hEntropyBar = GetDlgItem (hwndDlg, IDC_ENTROPY_BAR);
 			SendMessage (hEntropyBar, PBM_SETRANGE32, 0, maxEntropyLevel);
 			SendMessage (hEntropyBar, PBM_SETSTEP, 1, 0);
+			SendMessage (hEntropyBar, PBM_SETSTATE, PBST_ERROR, 0);
 
 #ifndef VOLFORMAT			
 			if (Randinit ()) 
@@ -5648,27 +5633,7 @@ BOOL CALLBACK KeyfileGeneratorDlgProc (HWND hwndDlg, UINT msg, WPARAM wParam, LP
 
 			RandpeekBytes (hwndDlg, randPool, sizeof (randPool), &mouseEventsCounter);
 
-			/* conservative estimate: 1 mouse move event brings 1 bit of entropy
-			 * https://security.stackexchange.com/questions/32844/for-how-much-time-should-i-randomly-move-the-mouse-for-generating-encryption-key/32848#32848
-			 */
-			if (mouseEntropyGathered == 0xFFFFFFFF)
-			{
-				mouseEventsInitialCount = mouseEventsCounter;
-				mouseEntropyGathered = 0;
-			}
-			else
-			{
-				if (	mouseEntropyGathered < maxEntropyLevel 
-					&& (mouseEventsCounter >= mouseEventsInitialCount) 
-					&& (mouseEventsCounter - mouseEventsInitialCount) <= maxEntropyLevel)
-					mouseEntropyGathered = mouseEventsCounter - mouseEventsInitialCount;
-				else
-					mouseEntropyGathered = maxEntropyLevel;
-
-				SendMessage (hEntropyBar, PBM_SETPOS, 
-				(WPARAM) (mouseEntropyGathered),
-				0);
-			}
+			ProcessEntropyEstimate (hEntropyBar, &mouseEventsInitialCount, mouseEventsCounter, maxEntropyLevel, &mouseEntropyGathered);
 
 			if (memcmp (lastRandPool, randPool, sizeof(lastRandPool)) != 0)
 			{
@@ -7744,6 +7709,33 @@ BOOL GetDriveGeometry (const wchar_t *deviceName, PDISK_GEOMETRY diskGeometry)
 	}
 	else
 		return FALSE;
+}
+
+BOOL GetPhysicalDriveGeometry (int driveNumber, PDISK_GEOMETRY diskGeometry)
+{
+	HANDLE hDev;
+	BOOL bResult = FALSE;
+	TCHAR devicePath[MAX_PATH];
+
+	StringCchPrintfW (devicePath, ARRAYSIZE (devicePath), L"\\\\.\\PhysicalDrive%d", driveNumber);
+
+	if ((hDev = CreateFileW (devicePath, 0, 0, NULL, OPEN_EXISTING, 0, NULL)) != INVALID_HANDLE_VALUE)
+	{
+		DWORD bytesRead = 0;
+
+		ZeroMemory (diskGeometry, sizeof (DISK_GEOMETRY));
+
+		if (	DeviceIoControl (hDev, IOCTL_DISK_GET_DRIVE_GEOMETRY, NULL, 0, diskGeometry, sizeof (DISK_GEOMETRY), &bytesRead, NULL)
+			&& (bytesRead == sizeof (DISK_GEOMETRY)) 
+			&& diskGeometry->BytesPerSector)
+		{
+			bResult = TRUE;
+		}
+
+		CloseHandle (hDev);
+	}
+
+	return bResult;
 }
 
 
@@ -10849,6 +10841,18 @@ std::vector <HostDevice> GetAvailableHostDevices (bool noDeviceProperties, bool 
 				device.Bootable = partInfo.BootIndicator ? true : false;
 				device.Size = partInfo.PartitionLength.QuadPart;
 			}
+			else
+			{
+				// retrieve size using DISK_GEOMETRY
+				DISK_GEOMETRY deviceGeometry = {0};
+				if (	GetDriveGeometry (devPath, &deviceGeometry)
+						||	((partNumber == 0) && GetPhysicalDriveGeometry (devNumber, &deviceGeometry))
+					)
+				{
+					device.Size = deviceGeometry.Cylinders.QuadPart * (LONGLONG) deviceGeometry.BytesPerSector 
+						* (LONGLONG) deviceGeometry.SectorsPerTrack * (LONGLONG) deviceGeometry.TracksPerCylinder;
+				}
+			}
 
 			device.HasUnencryptedFilesystem = (detectUnencryptedFilesystems && openTest.FilesystemDetected) ? true : false;
 
@@ -11507,4 +11511,41 @@ int AddBitmapToImageList(HIMAGELIST himl, HBITMAP hbmImage, HBITMAP hbmMask)
 HRESULT VCStrDupW(LPCWSTR psz, LPWSTR *ppwsz)
 {
 	return SHStrDupWFn (psz, ppwsz);
+}
+
+
+void ProcessEntropyEstimate (HWND hProgress, DWORD* pdwInitialValue, DWORD dwCounter, DWORD dwMaxLevel, DWORD* pdwEntropy)
+{
+	/* conservative estimate: 1 mouse move event brings 1 bit of entropy
+	 * https://security.stackexchange.com/questions/32844/for-how-much-time-should-i-randomly-move-the-mouse-for-generating-encryption-key/32848#32848
+	 */
+	if (*pdwEntropy == 0xFFFFFFFF)
+	{
+		*pdwInitialValue = dwCounter;
+		*pdwEntropy = 0;
+	}
+	else
+	{
+		if (	*pdwEntropy < dwMaxLevel 
+			&& (dwCounter >= *pdwInitialValue) 
+			&& (dwCounter - *pdwInitialValue) <= dwMaxLevel)
+			*pdwEntropy = dwCounter - *pdwInitialValue;
+		else
+			*pdwEntropy = dwMaxLevel;
+
+		if (IsOSAtLeast (WIN_VISTA))
+		{
+			int state = PBST_ERROR;
+			if (*pdwEntropy >= (dwMaxLevel/2))
+				state = PBST_NORMAL;
+			else if (*pdwEntropy >= (dwMaxLevel/4))
+				state = PBST_PAUSED;
+
+			SendMessage (hProgress, PBM_SETSTATE, state, 0);
+		}
+
+		SendMessage (hProgress, PBM_SETPOS, 
+		(WPARAM) (*pdwEntropy),
+		0);
+	}
 }

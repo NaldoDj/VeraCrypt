@@ -17,15 +17,15 @@
 #define TC_APP_NAME						"VeraCrypt"
 
 // Version displayed to user 
-#define VERSION_STRING					"1.16"
+#define VERSION_STRING					"1.17"
 
 // Version number to compare against driver
-#define VERSION_NUM						0x0116
+#define VERSION_NUM						0x0117
 
 // Release date
-#define TC_STR_RELEASE_DATE			"October 7th, 2015"
-#define TC_RELEASE_DATE_YEAR			2015
-#define TC_RELEASE_DATE_MONTH			10
+#define TC_STR_RELEASE_DATE			L"February 13th, 2016"
+#define TC_RELEASE_DATE_YEAR			2016
+#define TC_RELEASE_DATE_MONTH			 2
 
 #define BYTES_PER_KB                    1024LL
 #define BYTES_PER_MB                    1048576LL
@@ -119,6 +119,10 @@ typedef union
 
 } UINT64_STRUCT;
 
+#ifndef __has_builtin       // Optional of course
+#define __has_builtin(x) 0  // Compatibility with non-clang compilers
+#endif
+
 #ifdef TC_WINDOWS_BOOT
 
 #	ifdef  __cplusplus
@@ -129,6 +133,10 @@ void ThrowFatalException (int line);
 #	define TC_THROW_FATAL_EXCEPTION	ThrowFatalException (__LINE__)
 #elif defined (TC_WINDOWS_DRIVER)
 #	define TC_THROW_FATAL_EXCEPTION KeBugCheckEx (SECURITY_SYSTEM, __LINE__, 0, 0, 'VC')
+#elif (defined(__clang__) && __has_builtin(__builtin_trap)) \
+    || (defined(__GNUC__ ) && (__GNUC__ > 3 || (__GNUC__ == 3 && __GNUC_MINOR__ >= 3))) \
+    || (__has_builtin(__builtin_trap))
+#   define TC_THROW_FATAL_EXCEPTION __builtin_trap()
 #else
 #	define TC_THROW_FATAL_EXCEPTION	*(char *) 0 = 0
 #endif
