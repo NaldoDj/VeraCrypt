@@ -123,6 +123,7 @@ namespace VeraCrypt
 		*/
 
 		WORD lw = LOWORD (wParam);
+		WORD hw = HIWORD (wParam);
 		static bool SystemFavoritesMode;
 		static vector <FavoriteVolume> Favorites;
 		static int SelectedItem;
@@ -383,6 +384,20 @@ namespace VeraCrypt
 			case IDC_SHOW_PIM:
 				HandleShowPasswordFieldAction (hwndDlg, IDC_SHOW_PIM, IDC_PIM, 0);
 				return 1;
+
+			case IDC_PIM:
+				if (hw == EN_CHANGE)
+				{
+					int pim = GetPim (hwndDlg, IDC_PIM);
+					if (pim > (SystemFavoritesMode? MAX_BOOT_PIM_VALUE: MAX_PIM_VALUE))
+					{
+						SetDlgItemText (hwndDlg, IDC_PIM, L"");
+						SetFocus (GetDlgItem(hwndDlg, IDC_PIM));
+						Warning (SystemFavoritesMode? "PIM_SYSENC_TOO_BIG": "PIM_TOO_BIG", hwndDlg);
+						return 1;
+					}
+				}
+				break;
 			}
 
 			return 0;
@@ -601,7 +616,7 @@ namespace VeraCrypt
 				XmlGetAttributeText (xml, "pin", label, sizeof (label));
 			}
 			favorite.Pim = strtol (label, NULL, 10);
-			if (favorite.Pim < 0)
+			if (favorite.Pim < 0 || favorite.Pim > (systemFavorites? MAX_BOOT_PIM_VALUE : MAX_PIM_VALUE))
 				favorite.Pim = 0;
 
 			char boolVal[2];

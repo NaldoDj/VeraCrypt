@@ -709,6 +709,8 @@ void LoadSettingsAndCheckModified (HWND hwndDlg, BOOL bOnlyCheckModified, BOOL* 
 
 	ConfigReadCompareInt ("ShowDisconnectedNetworkDrives", FALSE, &bShowDisconnectedNetworkDrives, bOnlyCheckModified, pbSettingsModified);
 
+	ConfigReadCompareInt ("HideWaitingDialog", FALSE, &bHideWaitingDialog, bOnlyCheckModified, pbSettingsModified);
+
 	ConfigReadCompareInt ("MountVolumesRemovable", FALSE, &defaultMountOptions.Removable, bOnlyCheckModified, pbSettingsModified);
 	ConfigReadCompareInt ("MountVolumesReadOnly", FALSE, &defaultMountOptions.ReadOnly, bOnlyCheckModified, pbSettingsModified);
 
@@ -865,6 +867,7 @@ void SaveSettings (HWND hwndDlg)
 		ConfigWriteInt ("MountVolumesRemovable",			defaultMountOptions.Removable);
 		ConfigWriteInt ("PreserveTimestamps",				defaultMountOptions.PreserveTimestamp);
 		ConfigWriteInt ("ShowDisconnectedNetworkDrives",bShowDisconnectedNetworkDrives);
+		ConfigWriteInt ("HideWaitingDialog",				bHideWaitingDialog);
 
 		ConfigWriteInt ("EnableBackgroundTask",				bEnableBkgTask);
 		ConfigWriteInt ("CloseBackgroundTaskOnNoVolumes",	bCloseBkgTaskWhenNoVolumes);
@@ -2506,6 +2509,13 @@ BOOL CALLBACK PasswordChangeDlgProc (HWND hwndDlg, UINT msg, WPARAM wParam, LPAR
 				return 1;
 			}
 
+			if (!bSysEncPwdChangeDlgMode && (pim > MAX_PIM_VALUE))
+			{
+				SetFocus (GetDlgItem(hwndDlg, IDC_PIM));
+				Error ("PIM_TOO_BIG", hwndDlg);
+				return 1;
+			}
+
 			if (pwdChangeDlgMode == PCDM_CHANGE_PKCS5_PRF)
 			{
 				newKeyFilesParam.EnableKeyFiles = KeyFilesEnable;
@@ -3097,6 +3107,9 @@ BOOL CALLBACK PreferencesDlgProc (HWND hwndDlg, UINT msg, WPARAM wParam, LPARAM 
 
 			SendMessage (GetDlgItem (hwndDlg, IDC_SHOW_DISCONNECTED_NETWORK_DRIVES), BM_SETCHECK, 
 				bShowDisconnectedNetworkDrives ? BST_CHECKED:BST_UNCHECKED, 0);
+
+			SendMessage (GetDlgItem (hwndDlg, IDC_HIDE_WAITING_DIALOG), BM_SETCHECK, 
+				bHideWaitingDialog ? BST_CHECKED:BST_UNCHECKED, 0);
 			
 			SendMessage (GetDlgItem (hwndDlg, IDC_PREF_TEMP_CACHE_ON_MULTIPLE_MOUNT), BM_SETCHECK, 
 						bCacheDuringMultipleMount ? BST_CHECKED:BST_UNCHECKED, 0);
@@ -3212,6 +3225,7 @@ BOOL CALLBACK PreferencesDlgProc (HWND hwndDlg, UINT msg, WPARAM wParam, LPARAM 
 			bUseDifferentTrayIconIfVolMounted = IsButtonChecked (GetDlgItem (hwndDlg, IDC_PREF_USE_DIFF_TRAY_ICON_IF_VOL_MOUNTED));	 
 			bPreserveTimestamp = defaultMountOptions.PreserveTimestamp = IsButtonChecked (GetDlgItem (hwndDlg, IDC_PRESERVE_TIMESTAMPS));	 
 			bShowDisconnectedNetworkDrives = IsButtonChecked (GetDlgItem (hwndDlg, IDC_SHOW_DISCONNECTED_NETWORK_DRIVES));	 
+			bHideWaitingDialog = IsButtonChecked (GetDlgItem (hwndDlg, IDC_HIDE_WAITING_DIALOG));	 
 			bCacheDuringMultipleMount	= IsButtonChecked (GetDlgItem (hwndDlg, IDC_PREF_TEMP_CACHE_ON_MULTIPLE_MOUNT));
 			bWipeCacheOnExit				= IsButtonChecked (GetDlgItem (hwndDlg, IDC_PREF_WIPE_CACHE_ON_EXIT));
 			bWipeCacheOnAutoDismount		= IsButtonChecked (GetDlgItem (hwndDlg, IDC_PREF_WIPE_CACHE_ON_AUTODISMOUNT));
@@ -6364,6 +6378,7 @@ BOOL CALLBACK MainDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 			// Set critical default options in case UsePreferences is false
 			bPreserveTimestamp = defaultMountOptions.PreserveTimestamp = TRUE;
 			bShowDisconnectedNetworkDrives = FALSE;
+			bHideWaitingDialog = FALSE;
 
 			ResetWrongPwdRetryCount ();
 
@@ -8346,6 +8361,7 @@ void ExtractCommandLine (HWND hwndDlg, wchar_t *lpszCommandLine)
 				OptionTrueCryptMode,
 				OptionPim,
 				OptionTryEmptyPassword,
+				OptionNoWaitDlg,
 			};
 
 			argument args[]=
@@ -8372,6 +8388,7 @@ void ExtractCommandLine (HWND hwndDlg, wchar_t *lpszCommandLine)
 				{ OptionVolume,					L"/volume",			L"/v", FALSE },
 				{ CommandWipeCache,				L"/wipecache",		L"/w", FALSE },
 				{ OptionTryEmptyPassword,		L"/tryemptypass",	NULL, FALSE },
+				{ OptionNoWaitDlg,			L"/nowaitdlg",	NULL, FALSE },
 			};
 
 			argumentspec as;
@@ -8418,6 +8435,25 @@ void ExtractCommandLine (HWND hwndDlg, wchar_t *lpszCommandLine)
 							bCmdTryEmptyPasswordWhenKeyfileUsed = FALSE;
 						else if (!_wcsicmp(szTmp,L"y") || !_wcsicmp(szTmp,L"yes"))
 							bCmdTryEmptyPasswordWhenKeyfileUsed = TRUE;
+						else
+							AbortProcess ("COMMAND_LINE_ERROR");
+					}
+				}
+				break;
+
+			case OptionNoWaitDlg:
+				{
+					wchar_t szTmp[16] = {0};
+					bCmdHideWaitingDialog = TRUE;
+					bCmdHideWaitingDialogValid = TRUE;
+
+					if (HAS_ARGUMENT == GetArgumentValue (lpszCommandLineArgs, &i, nNoCommandLineArgs,
+						     szTmp, ARRAYSIZE (szTmp)))
+					{
+						if (!_wcsicmp(szTmp,L"n") || !_wcsicmp(szTmp,L"no"))
+							bCmdHideWaitingDialog = FALSE;
+						else if (!_wcsicmp(szTmp,L"y") || !_wcsicmp(szTmp,L"yes"))
+							bCmdHideWaitingDialog = TRUE;
 						else
 							AbortProcess ("COMMAND_LINE_ERROR");
 					}
@@ -8712,7 +8748,7 @@ void ExtractCommandLine (HWND hwndDlg, wchar_t *lpszCommandLine)
 					{
 						wchar_t* endPtr = NULL;
 						CmdVolumePim = (int) wcstol(szTmp, &endPtr, 0);
-						if (CmdVolumePim < 0 || endPtr == szTmp || *endPtr != L'\0')
+						if (CmdVolumePim < 0 || CmdVolumePim > MAX_PIM_VALUE || endPtr == szTmp || *endPtr != L'\0')
 						{
 							CmdVolumePim = 0;
 							AbortProcess ("COMMAND_LINE_ERROR");
@@ -8848,6 +8884,7 @@ static BOOL StartSystemFavoritesService ()
 	Silent = TRUE;
 	DeviceChangeBroadcastDisabled = TRUE;
 	bShowDisconnectedNetworkDrives = TRUE;
+	bHideWaitingDialog = TRUE;
 
 	InitOSVersionInfo();
 
