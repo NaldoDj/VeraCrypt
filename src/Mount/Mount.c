@@ -121,6 +121,10 @@ BOOL ComServerMode = FALSE;
 BOOL ServiceMode = FALSE;
 BOOL UsePreferences = TRUE;
 
+BOOL bSystemIsGPT = FALSE;
+wchar_t szDefaultRescueDiskName[TC_MAX_PATH+1];
+wchar_t szRescueDiskExtension[4];
+
 int HiddenSysLeakProtectionNotificationStatus = TC_HIDDEN_OS_READ_ONLY_NOTIF_MODE_NONE;
 int MaxVolumeIdleTime = -120;
 int nCurrentShowType = 0;			/* current display mode, mount, unmount etc */
@@ -344,6 +348,14 @@ static void InitMainDialog (HWND hwndDlg)
 		info.cch = (UINT) wcslen (str);
 
 		SetMenuItemInfoW (GetMenu (hwndDlg), i, TRUE,  &info);
+	}
+
+	{
+		// disable hidden OS creation for GPT system encryption
+		if (bSystemIsGPT)
+		{
+			EnableMenuItem (GetMenu (hwndDlg), IDM_CREATE_HIDDEN_OS, MF_GRAYED);
+		}
 	}
 
 	// Disable menu item for changing system header key derivation algorithm until it's implemented
@@ -1081,9 +1093,11 @@ unsigned __int64 GetSysEncDeviceEncryptedPartSize (BOOL bSilent)
 
 static void PopulateSysEncContextMenu (HMENU popup, BOOL bToolsOnly)
 {
+	SystemDriveConfiguration config;
 	try
 	{
 		BootEncStatus = BootEncObj->GetStatus();
+		config = BootEncObj->GetSystemDriveConfiguration();
 	}
 	catch (Exception &e)
 	{
@@ -1314,7 +1328,7 @@ BOOL SelectItem (HWND hTree, wchar_t nLetter)
 }
 
 
-static void LaunchVolCreationWizard (HWND hwndDlg, const wchar_t *arg)
+static void LaunchVolCreationWizard (HWND hwndDlg, const wchar_t *arg, BOOL bElevation)
 {
 	wchar_t t[TC_MAX_PATH + 1024] = {L'"',0};
 	wchar_t *tmp;
@@ -1348,21 +1362,30 @@ static void LaunchVolCreationWizard (HWND hwndDlg, const wchar_t *arg)
 
 		if (!FileExists(t))
 			Error ("VOL_CREATION_WIZARD_NOT_FOUND", hwndDlg);	// Display a user-friendly error message and advise what to do
-
-		if (wcslen (arg) > 0)
-		{
-			StringCbCatW (t, sizeof(t), L" ");
-			StringCbCatW (t, sizeof(t), arg);
-		}
-
-		if (!CreateProcess (NULL, (LPWSTR) t, NULL, NULL, FALSE, NORMAL_PRIORITY_CLASS, NULL, NULL, &si, &pi))
-		{
-			handleWin32Error (hwndDlg, SRC_POS);
-		}
 		else
 		{
-			CloseHandle (pi.hProcess);
-			CloseHandle (pi.hThread);
+
+			if (bElevation && !IsAdmin() && IsUacSupported())
+			{
+				LaunchElevatedProcess (hwndDlg, t, arg);
+			}
+			else
+			{
+				if (wcslen (arg) > 0)
+				{
+					StringCbCatW (t, sizeof(t), L" ");
+					StringCbCatW (t, sizeof(t), arg);
+				}
+				if (!CreateProcess (NULL, (LPWSTR) t, NULL, NULL, FALSE, NORMAL_PRIORITY_CLASS, NULL, NULL, &si, &pi))
+				{
+					handleWin32Error (hwndDlg, SRC_POS);
+				}
+				else
+				{
+					CloseHandle (pi.hProcess);
+					CloseHandle (pi.hThread);
+				}
+			}
 		}
 	}
 }
@@ -2426,10 +2449,10 @@ BOOL CALLBACK PasswordChangeDlgProc (HWND hwndDlg, UINT msg, WPARAM wParam, LPAR
 			case IDC_PKCS5_PRF_ID:
 				if (bSysEncPwdChangeDlgMode)
 				{
-					int new_hash_algo_id = (int) SendMessage (GetDlgItem (hwndDlg, IDC_PKCS5_PRF_ID), CB_GETITEMDATA,
+					int new_hash_algo_id = (int) SendMessage (GetDlgItem (hwndDlg, IDC_PKCS5_PRF_ID), CB_GETITEMDATA, 
 						SendMessage (GetDlgItem (hwndDlg, IDC_PKCS5_PRF_ID), CB_GETCURSEL, 0, 0), 0);
 
-					if (new_hash_algo_id != 0 && !HashForSystemEncryption(new_hash_algo_id))
+					if (new_hash_algo_id != 0 && !bSystemIsGPT && !HashForSystemEncryption(new_hash_algo_id))
 					{
 						int new_hash_algo_id = DEFAULT_HASH_ALGORITHM_BOOT;
 						Info ("ALGO_NOT_SUPPORTED_FOR_SYS_ENCRYPTION", hwndDlg);
@@ -2763,7 +2786,7 @@ BOOL CALLBACK PasswordDlgProc (HWND hwndDlg, UINT msg, WPARAM wParam, LPARAM lPa
 
 			for (i = FIRST_PRF_ID; i <= LAST_PRF_ID; i++)
 			{
-				if (HashForSystemEncryption(i))
+				if (bSystemIsGPT || HashForSystemEncryption(i))
 				{
 					nIndex = (int) SendMessage (hComboBox, CB_ADDSTRING, 0, (LPARAM) get_pkcs5_prf_name(i));
 					SendMessage (hComboBox, CB_SETITEMDATA, nIndex, (LPARAM) i);
@@ -4618,8 +4641,7 @@ static BOOL Mount (HWND hwndDlg, int nDosDriveNo, wchar_t *szFileName, int pim)
 		// If keyfiles are enabled, test empty password first
 		if (!mounted && KeyFilesEnable && FirstKeyFile && bEffectiveTryEmptyPasswordWhenKeyfileUsed)
 		{
-			Password emptyPassword;
-			emptyPassword.Length = 0;
+			Password emptyPassword = {0};
 
 			KeyFilesApply (hwndDlg, &emptyPassword, FirstKeyFile, szFileName);
 			// try TrueCrypt mode first since it is quick, only if no custom pim specified
@@ -5469,16 +5491,18 @@ static void ChangeSysEncPassword (HWND hwndDlg, BOOL bOnlyChangeKDF)
 // Initiates or resumes encryption of the system partition/drive
 static void EncryptSystemDevice (HWND hwndDlg)
 {
+	SystemDriveConfiguration config;
 	try
 	{
 		BootEncStatus = BootEncObj->GetStatus();
+		config = BootEncObj->GetSystemDriveConfiguration ();
 	}
 	catch (Exception &e)
 	{
 		e.Show (MainDlg);
 	}
 
-	if (!BootEncStatus.DriveEncrypted
+	if (!BootEncStatus.DriveEncrypted 
 		&& !BootEncStatus.DriveMounted
 		&& !SysEncryptionOrDecryptionRequired ())
 	{
@@ -5486,7 +5510,7 @@ static void EncryptSystemDevice (HWND hwndDlg)
 
 		if (!MutexExistsOnSystem (TC_MUTEX_NAME_SYSENC))	// If no instance of the wizard is currently taking care of system encryption
 		{
-			LaunchVolCreationWizard (hwndDlg, L"/sysenc");
+			LaunchVolCreationWizard (hwndDlg, L"/sysenc", FALSE);
 		}
 		else
 			Warning ("SYSTEM_ENCRYPTION_IN_PROGRESS_ELSEWHERE", hwndDlg);
@@ -5500,7 +5524,7 @@ static void EncryptSystemDevice (HWND hwndDlg)
 
 		if (!MutexExistsOnSystem (TC_MUTEX_NAME_SYSENC))	// If no instance of the wizard is currently taking care of system encryption
 		{
-			LaunchVolCreationWizard (hwndDlg, L"/sysenc");
+			LaunchVolCreationWizard (hwndDlg, L"/sysenc",FALSE);
 		}
 		else
 			Warning ("SYSTEM_ENCRYPTION_IN_PROGRESS_ELSEWHERE", hwndDlg);
@@ -5516,9 +5540,11 @@ static void EncryptSystemDevice (HWND hwndDlg)
 // Initiates decryption of the system partition/drive
 static void DecryptSystemDevice (HWND hwndDlg)
 {
+	SystemDriveConfiguration config;
 	try
 	{
 		BootEncStatus = BootEncObj->GetStatus();
+		config = BootEncObj->GetSystemDriveConfiguration ();
 	}
 	catch (Exception &e)
 	{
@@ -5579,8 +5605,8 @@ static void DecryptSystemDevice (HWND hwndDlg)
 			return;
 		}
 
-		CloseSysEncMutex ();
-		LaunchVolCreationWizard (hwndDlg, L"/dsysenc");
+		CloseSysEncMutex ();	
+		LaunchVolCreationWizard (hwndDlg, L"/dsysenc", FALSE);
 	}
 	else
 		Warning ("SYSTEM_ENCRYPTION_IN_PROGRESS_ELSEWHERE", hwndDlg);
@@ -5595,7 +5621,7 @@ static void CreateHiddenOS (HWND hwndDlg)
 	// such information, but will exit (displaying only an error meessage).
 	Info("HIDDEN_OS_PREINFO", hwndDlg);
 
-	LaunchVolCreationWizard (hwndDlg, L"/isysenc");
+	LaunchVolCreationWizard (hwndDlg, L"/isysenc", FALSE);
 }
 
 static void DecryptNonSysDevice (HWND hwndDlg, BOOL bResolveAmbiguousSelection, BOOL bUseDriveListSel)
@@ -5706,7 +5732,7 @@ static void DecryptNonSysDevice (HWND hwndDlg, BOOL bResolveAmbiguousSelection, 
 	if (AskWarnNoYes ("CONFIRM_DECRYPT_NON_SYS_DEVICE_CAUTION", hwndDlg) == IDNO)
 		return;
 
-	LaunchVolCreationWizard (hwndDlg, (wstring (L"/inplacedec \"") + scPath + L"\"").c_str ());
+	LaunchVolCreationWizard (hwndDlg, (wstring (L"/inplacedec \"") + scPath + L"\"").c_str (), FALSE);
 }
 
 // Blindly attempts (without any checks) to instruct the wizard to resume whatever system encryption process
@@ -5715,7 +5741,17 @@ static void ResumeInterruptedSysEncProcess (HWND hwndDlg)
 {
 	if (!MutexExistsOnSystem (TC_MUTEX_NAME_SYSENC))	// If no instance of the wizard is currently taking care of system encryption
 	{
-		LaunchVolCreationWizard (MainDlg, L"/csysenc");
+		SystemDriveConfiguration config;
+		try
+		{
+			config = BootEncObj->GetSystemDriveConfiguration ();
+		}
+		catch (Exception &e)
+		{
+			e.Show (MainDlg);
+		}
+
+		LaunchVolCreationWizard (MainDlg, L"/csysenc", FALSE);
 	}
 	else
 		Warning ("SYSTEM_ENCRYPTION_IN_PROGRESS_ELSEWHERE", hwndDlg);
@@ -5770,7 +5806,7 @@ void CreateRescueDisk (HWND hwndDlg)
 			wchar_t initialDir[MAX_PATH];
 			SHGetFolderPath (NULL, CSIDL_MYDOCUMENTS, NULL, 0, initialDir);
 
-			if (!BrowseFilesInDir (hwndDlg, "OPEN_TITLE", initialDir, szRescueDiskISO, FALSE, TRUE, NULL, L"VeraCrypt Rescue Disk.iso", L"iso"))
+			if (!BrowseFilesInDir (hwndDlg, "OPEN_TITLE", initialDir, szRescueDiskISO, FALSE, TRUE, NULL, szDefaultRescueDiskName, szRescueDiskExtension))
 			{
 				CloseSysEncMutex ();
 				return;
@@ -5779,17 +5815,25 @@ void CreateRescueDisk (HWND hwndDlg)
 			WaitCursor();
 			BootEncObj->CreateRescueIsoImage (false, szRescueDiskISO);
 
-			StringCbPrintfW (szTmp, sizeof szTmp,
-				GetString (IsWindowsIsoBurnerAvailable() ? "RESCUE_DISK_NON_WIZARD_CREATION_WIN_ISOBURN" : "RESCUE_DISK_NON_WIZARD_CREATION_BURN"),
-				szRescueDiskISO);
-
-			if (IsWindowsIsoBurnerAvailable())
+			if (bSystemIsGPT)
 			{
-				if (AskYesNoString (szTmp, hwndDlg) == IDYES)
-					LaunchWindowsIsoBurner (MainDlg, szRescueDiskISO);
+				StringCbPrintfW (szTmp, sizeof szTmp, GetString ("RESCUE_DISK_EFI_NON_WIZARD_CREATION"), szRescueDiskISO);
+				InfoDirect (szTmp, hwndDlg);
 			}
 			else
-				InfoDirect (szTmp, hwndDlg);
+			{
+				StringCbPrintfW (szTmp, sizeof szTmp,
+					GetString (IsWindowsIsoBurnerAvailable() ? "RESCUE_DISK_NON_WIZARD_CREATION_WIN_ISOBURN" : "RESCUE_DISK_NON_WIZARD_CREATION_BURN"),
+					szRescueDiskISO);
+
+				if (IsWindowsIsoBurnerAvailable())
+				{
+					if (AskYesNoString (szTmp, hwndDlg) == IDYES)
+						LaunchWindowsIsoBurner (MainDlg, szRescueDiskISO);
+				}
+				else
+					InfoDirect (szTmp, hwndDlg);
+			}
 		}
 		catch (Exception &e)
 		{
@@ -5804,7 +5848,7 @@ void CreateRescueDisk (HWND hwndDlg)
 		Warning ("SYSTEM_ENCRYPTION_IN_PROGRESS_ELSEWHERE", hwndDlg);
 }
 
-static void VerifyRescueDisk (HWND hwndDlg, bool checkIsoFile)
+static void VerifyRescueDisk (HWND hwndDlg, bool checkImageFile)
 {
 	try
 	{
@@ -5835,7 +5879,7 @@ static void VerifyRescueDisk (HWND hwndDlg, bool checkIsoFile)
 	{
 		try
 		{
-			if (!checkIsoFile && (AskOkCancel ("RESCUE_DISK_NON_WIZARD_CHECK_INSERT", hwndDlg) != IDOK))
+			if (!checkImageFile && (AskOkCancel ("RESCUE_DISK_NON_WIZARD_CHECK_INSERT", hwndDlg) != IDOK))
 			{
 				CloseSysEncMutex ();
 				return;
@@ -5845,20 +5889,20 @@ static void VerifyRescueDisk (HWND hwndDlg, bool checkIsoFile)
 			BootEncObj->CreateRescueIsoImage (false, L"");
 
 
-			if (checkIsoFile)
+			if (checkImageFile)
 			{
-				wchar_t szRescueDiskISO [TC_MAX_PATH+1];
+				wchar_t szRescueDiskImage [TC_MAX_PATH+1];
 				wchar_t initialDir[MAX_PATH];
 				SHGetFolderPath (NULL, CSIDL_MYDOCUMENTS, NULL, 0, initialDir);
 
-				if (!BrowseFilesInDir (hwndDlg, "OPEN_TITLE", initialDir, szRescueDiskISO, FALSE, FALSE, NULL, L"VeraCrypt Rescue Disk.iso", L"iso"))
+				if (!BrowseFilesInDir (hwndDlg, "OPEN_TITLE", initialDir, szRescueDiskImage, FALSE, FALSE, NULL,szDefaultRescueDiskName, szRescueDiskExtension))
 				{
 					CloseSysEncMutex ();
 					return;
 				}
 
 				WaitCursor();
-				if (!BootEncObj->VerifyRescueDiskIsoImage (szRescueDiskISO))
+				if (!BootEncObj->VerifyRescueDiskImage (szRescueDiskImage))
 					Error ("RESCUE_DISK_ISO_IMAGE_CHECK_FAILED", hwndDlg);
 				else
 					Info ("RESCUE_DISK_ISO_IMAGE_CHECK_PASSED", hwndDlg);
@@ -5867,7 +5911,7 @@ static void VerifyRescueDisk (HWND hwndDlg, bool checkIsoFile)
 			{
 				WaitCursor();
 				if (!BootEncObj->VerifyRescueDisk ())
-					Error ("RESCUE_DISK_NON_WIZARD_CHECK_FAILED", hwndDlg);
+					Error (bSystemIsGPT? "RESCUE_DISK_EFI_NON_WIZARD_CHECK_FAILED" : "RESCUE_DISK_NON_WIZARD_CHECK_FAILED", hwndDlg);
 				else
 					Info ("RESCUE_DISK_NON_WIZARD_CHECK_PASSED", hwndDlg);
 			}
@@ -5875,7 +5919,7 @@ static void VerifyRescueDisk (HWND hwndDlg, bool checkIsoFile)
 		catch (Exception &e)
 		{
 			e.Show (MainDlg);
-			Error ("RESCUE_DISK_NON_WIZARD_CHECK_FAILED", hwndDlg);
+			Error (bSystemIsGPT? "RESCUE_DISK_EFI_NON_WIZARD_CHECK_FAILED" : "RESCUE_DISK_NON_WIZARD_CHECK_FAILED", hwndDlg);
 		}
 		CloseSysEncMutex ();
 
@@ -5936,7 +5980,7 @@ static void ResumeInterruptedNonSysInplaceEncProcess (BOOL bDecrypt)
 	// IMPORTANT: This function must not check any config files! Otherwise, if a config file was lost or corrupt,
 	// the user would not be able resume encryption and the data on the volume would be inaccessible.
 
-	LaunchVolCreationWizard (MainDlg, bDecrypt? L"/resumeinplacedec" : L"/zinplace");
+	LaunchVolCreationWizard (MainDlg, bDecrypt? L"/resumeinplacedec" : L"/zinplace", FALSE);
 }
 
 BOOL SelectContainer (HWND hwndDlg)
@@ -5989,8 +6033,9 @@ static void WipeCache (HWND hwndDlg, BOOL silent)
 
 static void Benchmark (HWND hwndDlg)
 {
+
 	DialogBoxParamW (hInst, MAKEINTRESOURCEW (IDD_BENCHMARK_DLG), hwndDlg,
-		(DLGPROC) BenchmarkDlgProc, (LPARAM) NULL);
+		(DLGPROC) BenchmarkDlgProc, (LPARAM) bSystemIsGPT);
 }
 
 
@@ -6387,11 +6432,20 @@ BOOL CALLBACK MainDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 				BootEncObj->SetParentWindow (hwndDlg);
 				BootEncStatus = BootEncObj->GetStatus();
 				RecentBootEncStatus = BootEncStatus;
+				bSystemIsGPT = BootEncObj->GetSystemDriveConfiguration().SystemPartition.IsGPT;
 			}
 			catch (...)
 			{
 				// NOP
 			}
+
+			if (bSystemIsGPT)
+				StringCbCopyW (szRescueDiskExtension, sizeof (szRescueDiskExtension), L"zip");
+			else
+				StringCbCopyW (szRescueDiskExtension, sizeof (szRescueDiskExtension), L"iso");
+			
+			StringCbCopyW (szDefaultRescueDiskName, sizeof (szDefaultRescueDiskName), L"VeraCrypt Rescue Disk.");		
+			StringCbCatW  (szDefaultRescueDiskName, sizeof (szDefaultRescueDiskName), szRescueDiskExtension);
 
 			if (UsePreferences)
 			{
@@ -6741,9 +6795,17 @@ BOOL CALLBACK MainDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 						{
 							// The wizard was not launched during the system startup seq, or the user may have forgotten
 							// to resume the encryption/decryption process.
+							SystemDriveConfiguration config;
+							try
+							{
+								config = BootEncObj->GetSystemDriveConfiguration ();
+							}
+							catch (Exception &e)
+							{
+								e.Show (MainDlg);
+							}
 
-
-							LaunchVolCreationWizard (hwndDlg, L"/csysenc");
+							LaunchVolCreationWizard (hwndDlg, L"/csysenc", FALSE);
 						}
 					}
 				}
@@ -7723,7 +7785,7 @@ BOOL CALLBACK MainDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 
 		if (lw == IDC_CREATE_VOLUME || lw == IDM_CREATE_VOLUME || lw == IDM_VOLUME_WIZARD)
 		{
-			LaunchVolCreationWizard (hwndDlg, L"");
+			LaunchVolCreationWizard (hwndDlg, L"", FALSE);
 			return 1;
 		}
 
@@ -8013,7 +8075,7 @@ BOOL CALLBACK MainDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 
 		if (lw == IDM_SYSENC_SETTINGS || lw == IDM_SYS_ENC_SETTINGS)
 		{
-			DialogBoxParamW (hInst, MAKEINTRESOURCEW (IDD_SYSENC_SETTINGS), hwndDlg, (DLGPROC) BootLoaderPreferencesDlgProc, 0);
+			DialogBoxParamW (hInst, MAKEINTRESOURCEW (bSystemIsGPT? IDD_EFI_SYSENC_SETTINGS : IDD_SYSENC_SETTINGS), hwndDlg, (DLGPROC) BootLoaderPreferencesDlgProc, 0);
 			return 1;
 		}
 
@@ -9646,8 +9708,8 @@ int BackupVolumeHeader (HWND hwndDlg, BOOL bRequireConfirmation, const wchar_t *
 	OpenVolumeContext hiddenVolume;
 	Password hiddenVolPassword;
 	int hiddenVolPkcs5 = 0, hiddenVolPim = 0;
-	byte temporaryKey[MASTER_KEYDATA_SIZE];
-	byte originalK2[MASTER_KEYDATA_SIZE];
+	CRYPTOPP_ALIGN_DATA(16) byte temporaryKey[MASTER_KEYDATA_SIZE];
+	CRYPTOPP_ALIGN_DATA(16) byte originalK2[MASTER_KEYDATA_SIZE];
 	int EffectiveVolumePkcs5 = CmdVolumePkcs5;
 	int EffectiveVolumePim = CmdVolumePim;
 
@@ -10430,16 +10492,17 @@ static BOOL CALLBACK PerformanceSettingsDlgProc (HWND hwndDlg, UINT msg, WPARAM 
 					}
 					catch (...)
 					{
-						BootEncStatus.DriveMounted = false;
+						BootEncStatus.DriveMounted = false;	
 					}
 
-					if (BootEncStatus.DriveMounted)
+					if (BootEncStatus.DriveMounted && !bSystemIsGPT)
 					{
 						byte userConfig;
 						string customUserMessage;
 						uint16 bootLoaderVersion;
 
-						BootEncObj->ReadBootSectorConfig (nullptr, 0, &userConfig, &customUserMessage, &bootLoaderVersion);
+						if (!BootEncObj->ReadBootSectorConfig (nullptr, 0, &userConfig, &customUserMessage, &bootLoaderVersion))
+							return 1;
 
 						if (bootLoaderVersion != VERSION_NUM)
 							Warning ("BOOT_LOADER_VERSION_INCORRECT_PREFERENCES", hwndDlg);
@@ -10449,7 +10512,7 @@ static BOOL CALLBACK PerformanceSettingsDlgProc (HWND hwndDlg, UINT msg, WPARAM 
 						else
 							userConfig &= ~TC_BOOT_USER_CFG_FLAG_DISABLE_HW_ENCRYPTION;
 
-						BootEncObj->WriteBootSectorUserConfig (userConfig, customUserMessage, prop.volumePim);
+						BootEncObj->WriteBootSectorUserConfig (userConfig, customUserMessage, prop.volumePim, prop.pkcs5);
 					}
 
 					SetDriverConfigurationFlag (TC_DRIVER_CONFIG_DISABLE_HARDWARE_ENCRYPTION, disableHW);
@@ -10763,7 +10826,8 @@ static BOOL CALLBACK BootLoaderPreferencesDlgProc (HWND hwndDlg, UINT msg, WPARA
 	{
 	case WM_INITDIALOG:
 		{
-			if (!BootEncObj->GetStatus().DriveMounted)
+			BootEncryptionStatus BootEncStatus = BootEncObj->GetStatus();
+			if (!BootEncStatus.DriveMounted)
 			{
 				Warning ("SYS_DRIVE_NOT_ENCRYPTED", hwndDlg);
 				EndDialog (hwndDlg, IDCANCEL);
@@ -10777,27 +10841,38 @@ static BOOL CALLBACK BootLoaderPreferencesDlgProc (HWND hwndDlg, UINT msg, WPARA
 				uint32 driverConfig = ReadDriverConfigurationFlags();
 				byte userConfig;
 				string customUserMessage;
-				uint16 bootLoaderVersion;
+				uint16 bootLoaderVersion = 0;
 				BOOL bPasswordCacheEnabled = (driverConfig & TC_DRIVER_CONFIG_CACHE_BOOT_PASSWORD)? TRUE : FALSE;
 				BOOL bPimCacheEnabled = (driverConfig & TC_DRIVER_CONFIG_CACHE_BOOT_PIM)? TRUE : FALSE;
 
-				BootEncObj->ReadBootSectorConfig (nullptr, 0, &userConfig, &customUserMessage, &bootLoaderVersion);
+				if (!BootEncObj->ReadBootSectorConfig (nullptr, 0, &userConfig, &customUserMessage, &bootLoaderVersion))
+				{
+					// operations canceled
+					EndDialog (hwndDlg, IDCANCEL);
+					return 1;
+				}
 
 				if (bootLoaderVersion != VERSION_NUM)
 					Warning ("BOOT_LOADER_VERSION_INCORRECT_PREFERENCES", hwndDlg);
 
-				SendMessage (GetDlgItem (hwndDlg, IDC_CUSTOM_BOOT_LOADER_MESSAGE), EM_LIMITTEXT, TC_BOOT_SECTOR_USER_MESSAGE_MAX_LENGTH, 0);
-				SetDlgItemTextA (hwndDlg, IDC_CUSTOM_BOOT_LOADER_MESSAGE, customUserMessage.c_str());
+				if (bSystemIsGPT)
+				{
+					CheckDlgButton (hwndDlg, IDC_DISABLE_BOOT_LOADER_HASH_PROMPT, (userConfig & TC_BOOT_USER_CFG_FLAG_STORE_HASH) ? BST_CHECKED : BST_UNCHECKED);
+				}
+				else
+				{
+					SendMessage (GetDlgItem (hwndDlg, IDC_CUSTOM_BOOT_LOADER_MESSAGE), EM_LIMITTEXT, TC_BOOT_SECTOR_USER_MESSAGE_MAX_LENGTH, 0);
+					SetDlgItemTextA (hwndDlg, IDC_CUSTOM_BOOT_LOADER_MESSAGE, customUserMessage.c_str());
+					CheckDlgButton (hwndDlg, IDC_DISABLE_BOOT_LOADER_OUTPUT, (userConfig & TC_BOOT_USER_CFG_FLAG_SILENT_MODE) ? BST_CHECKED : BST_UNCHECKED);
+					CheckDlgButton (hwndDlg, IDC_ALLOW_ESC_PBA_BYPASS, (userConfig & TC_BOOT_USER_CFG_FLAG_DISABLE_ESC) ? BST_UNCHECKED : BST_CHECKED);
+					CheckDlgButton (hwndDlg, IDC_DISABLE_EVIL_MAID_ATTACK_DETECTION, (driverConfig & TC_DRIVER_CONFIG_DISABLE_EVIL_MAID_ATTACK_DETECTION) ? BST_CHECKED : BST_UNCHECKED);
+					SetWindowTextW (GetDlgItem (hwndDlg, IDC_CUSTOM_BOOT_LOADER_MESSAGE_HELP), GetString("CUSTOM_BOOT_LOADER_MESSAGE_HELP"));
+				}
 
 				CheckDlgButton (hwndDlg, IDC_DISABLE_BOOT_LOADER_PIM_PROMPT, (userConfig & TC_BOOT_USER_CFG_FLAG_DISABLE_PIM) ? BST_CHECKED : BST_UNCHECKED);
-				CheckDlgButton (hwndDlg, IDC_DISABLE_BOOT_LOADER_OUTPUT, (userConfig & TC_BOOT_USER_CFG_FLAG_SILENT_MODE) ? BST_CHECKED : BST_UNCHECKED);
-				CheckDlgButton (hwndDlg, IDC_ALLOW_ESC_PBA_BYPASS, (userConfig & TC_BOOT_USER_CFG_FLAG_DISABLE_ESC) ? BST_UNCHECKED : BST_CHECKED);
 				CheckDlgButton (hwndDlg, IDC_BOOT_LOADER_CACHE_PASSWORD, bPasswordCacheEnabled ? BST_CHECKED : BST_UNCHECKED);
-				CheckDlgButton (hwndDlg, IDC_DISABLE_EVIL_MAID_ATTACK_DETECTION, (driverConfig & TC_DRIVER_CONFIG_DISABLE_EVIL_MAID_ATTACK_DETECTION) ? BST_CHECKED : BST_UNCHECKED);
 				EnableWindow (GetDlgItem (hwndDlg, IDC_BOOT_LOADER_CACHE_PIM), bPasswordCacheEnabled);
 				CheckDlgButton (hwndDlg, IDC_BOOT_LOADER_CACHE_PIM, (bPasswordCacheEnabled && bPimCacheEnabled)? BST_CHECKED : BST_UNCHECKED);
-
-				SetWindowTextW (GetDlgItem (hwndDlg, IDC_CUSTOM_BOOT_LOADER_MESSAGE_HELP), GetString("CUSTOM_BOOT_LOADER_MESSAGE_HELP"));
 			}
 			catch (Exception &e)
 			{
@@ -10837,13 +10912,15 @@ static BOOL CALLBACK BootLoaderPreferencesDlgProc (HWND hwndDlg, UINT msg, WPARA
 					return 1;
 				}
 
-				char customUserMessage[TC_BOOT_SECTOR_USER_MESSAGE_MAX_LENGTH + 1];
-				GetDlgItemTextA (hwndDlg, IDC_CUSTOM_BOOT_LOADER_MESSAGE, customUserMessage, sizeof (customUserMessage));
+				char customUserMessage[TC_BOOT_SECTOR_USER_MESSAGE_MAX_LENGTH + 1] = {0};
+				if (!bSystemIsGPT)
+					GetDlgItemTextA (hwndDlg, IDC_CUSTOM_BOOT_LOADER_MESSAGE, customUserMessage, sizeof (customUserMessage));
 
 				byte userConfig;
 				try
 				{
-					BootEncObj->ReadBootSectorConfig (nullptr, 0, &userConfig);
+					if (!BootEncObj->ReadBootSectorConfig (nullptr, 0, &userConfig))
+						return 1;
 				}
 				catch (Exception &e)
 				{
@@ -10856,7 +10933,16 @@ static BOOL CALLBACK BootLoaderPreferencesDlgProc (HWND hwndDlg, UINT msg, WPARA
 				else
 					userConfig &= ~TC_BOOT_USER_CFG_FLAG_DISABLE_PIM;
 
-				if (IsDlgButtonChecked (hwndDlg, IDC_DISABLE_BOOT_LOADER_OUTPUT))
+				if (bSystemIsGPT)
+				{
+				if (IsDlgButtonChecked (hwndDlg, IDC_DISABLE_BOOT_LOADER_HASH_PROMPT))
+					userConfig |= TC_BOOT_USER_CFG_FLAG_STORE_HASH;
+				else
+					userConfig &= ~TC_BOOT_USER_CFG_FLAG_STORE_HASH;
+				}
+				else
+				{
+					if (IsDlgButtonChecked (hwndDlg, IDC_DISABLE_BOOT_LOADER_OUTPUT))
 					userConfig |= TC_BOOT_USER_CFG_FLAG_SILENT_MODE;
 				else
 					userConfig &= ~TC_BOOT_USER_CFG_FLAG_SILENT_MODE;
@@ -10865,12 +10951,13 @@ static BOOL CALLBACK BootLoaderPreferencesDlgProc (HWND hwndDlg, UINT msg, WPARA
 					userConfig |= TC_BOOT_USER_CFG_FLAG_DISABLE_ESC;
 				else
 					userConfig &= ~TC_BOOT_USER_CFG_FLAG_DISABLE_ESC;
+				}
 
 				try
 				{
 					BOOL bPasswordCacheEnabled = IsDlgButtonChecked (hwndDlg, IDC_BOOT_LOADER_CACHE_PASSWORD);
 					BOOL bPimCacheEnabled = IsDlgButtonChecked (hwndDlg, IDC_BOOT_LOADER_CACHE_PIM);
-					BootEncObj->WriteBootSectorUserConfig (userConfig, customUserMessage, prop.volumePim);
+					BootEncObj->WriteBootSectorUserConfig (userConfig, customUserMessage, prop.volumePim, prop.pkcs5);
 					SetDriverConfigurationFlag (TC_DRIVER_CONFIG_CACHE_BOOT_PASSWORD, bPasswordCacheEnabled);
 					SetDriverConfigurationFlag (TC_DRIVER_CONFIG_CACHE_BOOT_PIM, (bPasswordCacheEnabled && bPimCacheEnabled)? TRUE : FALSE);
 					SetDriverConfigurationFlag (TC_DRIVER_CONFIG_DISABLE_EVIL_MAID_ATTACK_DETECTION, IsDlgButtonChecked (hwndDlg, IDC_DISABLE_EVIL_MAID_ATTACK_DETECTION));
@@ -10891,6 +10978,8 @@ static BOOL CALLBACK BootLoaderPreferencesDlgProc (HWND hwndDlg, UINT msg, WPARA
 			{
 				CheckDlgButton (hwndDlg, IDC_DISABLE_BOOT_LOADER_PIM_PROMPT, BST_UNCHECKED);
 			}
+
+			break;
 
 		case IDC_DISABLE_BOOT_LOADER_OUTPUT:
 			if ((IsDlgButtonChecked (hwndDlg, IDC_DISABLE_BOOT_LOADER_OUTPUT))

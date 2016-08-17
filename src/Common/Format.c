@@ -566,10 +566,63 @@ begin_format:
 	// Fill reserved header sectors (including the backup header area) with random data
 	if (!volParams->hiddenVol)
 	{
-		nStatus = WriteRandomDataToReservedHeaderAreas (hwndDlg, dev, cryptoInfo, dataAreaSize, FALSE, FALSE);
+		BOOL bUpdateBackup = FALSE;
+
+		nStatus = WriteRandomDataToReservedHeaderAreas (hwndDlg, dev, cryptoInfo, dataAreaSize, FALSE, FALSE, FALSE);
 
 		if (nStatus != ERR_SUCCESS)
 			goto error;
+
+		// write fake hidden volume header to protect against attacks that use statistical entropy
+		// analysis to detect presence of hidden volumes.
+		
+		while (TRUE)
+		{
+			PCRYPTO_INFO dummyInfo = NULL;
+			LARGE_INTEGER hiddenOffset;
+
+			hiddenOffset.QuadPart = bUpdateBackup ? dataAreaSize + TC_VOLUME_HEADER_GROUP_SIZE + TC_HIDDEN_VOLUME_HEADER_OFFSET: TC_HIDDEN_VOLUME_HEADER_OFFSET;
+
+			nStatus = CreateVolumeHeaderInMemory (hwndDlg, FALSE,
+				header,
+				volParams->ea,
+				FIRST_MODE_OF_OPERATION_ID,
+				NULL,
+				0,
+				0,
+				NULL,
+				&dummyInfo,
+				dataAreaSize,
+				dataAreaSize,
+				dataOffset,
+				dataAreaSize,
+				0,
+				volParams->headerFlags,
+				FormatSectorSize,
+				FALSE);
+
+			if (nStatus != ERR_SUCCESS)
+				goto error;
+
+			crypto_close (dummyInfo);
+
+			if (!SetFilePointerEx ((HANDLE) dev, hiddenOffset, NULL, FILE_BEGIN))
+			{
+				nStatus = ERR_OS_ERROR;
+				goto error;
+			}
+
+			if (!WriteEffectiveVolumeHeader (volParams->bDevice, dev, header))
+			{
+				nStatus = ERR_OS_ERROR;
+				goto error;
+			}
+
+			if (bUpdateBackup)
+				break;
+
+			bUpdateBackup = TRUE;
+		}
 	}
 
 #ifndef DEBUG
@@ -700,8 +753,8 @@ int FormatNoFs (HWND hwndDlg, unsigned __int64 startSector, __int64 num_sectors,
 	unsigned __int64 nSecNo = startSector;
 	int retVal = 0;
 	DWORD err;
-	char temporaryKey[MASTER_KEYDATA_SIZE];
-	char originalK2[MASTER_KEYDATA_SIZE];
+	CRYPTOPP_ALIGN_DATA(16) char temporaryKey[MASTER_KEYDATA_SIZE];
+	CRYPTOPP_ALIGN_DATA(16) char originalK2[MASTER_KEYDATA_SIZE];
 
 	LARGE_INTEGER startOffset;
 	LARGE_INTEGER newOffset;

@@ -255,6 +255,8 @@ BOOL bOperationSuccess = FALSE;
 
 BOOL bGuiMode = TRUE;
 
+BOOL bSystemIsGPT = FALSE;
+
 int nPbar = 0;			/* Control ID of progress bar:- for format code */
 
 wchar_t HeaderKeyGUIView [KEY_GUI_VIEW_SIZE];
@@ -931,11 +933,13 @@ static BOOL SysDriveOrPartitionFullyEncrypted (BOOL bSilent)
 BOOL SwitchWizardToSysEncMode (void)
 {
 	WaitCursor ();
+	SystemDriveConfiguration config;
 
 	try
 	{
 		BootEncStatus = BootEncObj->GetStatus();
 		bWholeSysDrive = BootEncObj->SystemPartitionCoversWholeDrive();
+		config = BootEncObj->GetSystemDriveConfiguration ();
 	}
 	catch (Exception &e)
 	{
@@ -1413,6 +1417,18 @@ void ComboSelChangeEA (HWND hwndDlg)
 
 			SetWindowTextW (GetDlgItem (hwndDlg, IDC_BOX_HELP), GetString ("TWOFISH_HELP"));
 		}
+		else if (wcsncmp (name, L"GOST89", 6) == 0)
+		{
+			StringCbPrintfW (hyperLink, sizeof(hyperLink) / 2, GetString ("MORE_INFO_ABOUT"), L"GOST89");
+
+			SetWindowTextW (GetDlgItem (hwndDlg, IDC_BOX_HELP), GetString ("GOST89_HELP"));
+		}
+		else if (wcscmp (name, L"Kuznyechik") == 0)
+		{
+			StringCbPrintfW (hyperLink, sizeof(hyperLink) / 2, GetString ("MORE_INFO_ABOUT"), name);
+
+			SetWindowTextW (GetDlgItem (hwndDlg, IDC_BOX_HELP), GetString ("KUZNYECHIK_HELP"));
+		}
 		else if (wcscmp (name, L"Camellia") == 0)
 		{
 			StringCbPrintfW (hyperLink, sizeof(hyperLink) / 2, GetString ("MORE_INFO_ABOUT"), name);
@@ -1588,6 +1604,10 @@ static void RefreshMultiBootControls (HWND hwndDlg)
 	if (nMultiBoot == 0)
 		nMultiBoot = 1;
 #endif
+
+	// For now, we force single configuration in wizard
+	if (bSystemIsGPT && nMultiBoot == 0)
+		nMultiBoot = 1;
 
 	SendMessage (GetDlgItem (hwndDlg, IDC_SINGLE_BOOT),
 		BM_SETCHECK,
@@ -3612,6 +3632,13 @@ static BOOL FileSize4GBLimitQuestionNeeded (void)
 }
 
 
+void DisableIfGpt(HWND control)
+{
+   if (bSystemIsGPT) {
+      EnableWindow(control, FALSE);
+   }
+}
+
 /* Except in response to the WM_INITDIALOG message, the dialog box procedure
    should return nonzero if it processes the message, and zero if it does
    not. - see DialogProc */
@@ -3669,6 +3696,8 @@ BOOL CALLBACK PageDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 			SendMessage (GetDlgItem (hwndDlg, IDC_SYSENC_HIDDEN), WM_SETFONT, (WPARAM) hUserBoldFont, (LPARAM) TRUE);
 			SendMessage (GetDlgItem (hwndDlg, IDC_SYSENC_NORMAL), WM_SETFONT, (WPARAM) hUserBoldFont, (LPARAM) TRUE);
 
+			DisableIfGpt(GetDlgItem(hwndDlg, IDC_SYSENC_HIDDEN));
+
 			CheckButton (GetDlgItem (hwndDlg, bHiddenOS ? IDC_SYSENC_HIDDEN : IDC_SYSENC_NORMAL));
 
 			SetWindowTextW (GetDlgItem (hwndDlg, IDC_BOX_HELP), GetString ("SYSENC_HIDDEN_TYPE_HELP"));
@@ -3708,6 +3737,7 @@ BOOL CALLBACK PageDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 			SetWindowTextW (GetDlgItem (hwndDlg, IDT_WHOLE_SYS_DRIVE), GetString ("SYS_ENCRYPTION_SPAN_WHOLE_SYS_DRIVE_HELP"));
 
 			CheckButton (GetDlgItem (hwndDlg, bWholeSysDrive ? IDC_WHOLE_SYS_DRIVE : IDC_SYS_PARTITION));
+			DisableIfGpt(GetDlgItem(hwndDlg, IDC_WHOLE_SYS_DRIVE));
 
 			SetWindowTextW (GetDlgItem (GetParent (hwndDlg), IDC_NEXT), GetString ("NEXT"));
 			SetWindowTextW (GetDlgItem (GetParent (hwndDlg), IDC_PREV), GetString ("PREV"));
@@ -3785,7 +3815,7 @@ BOOL CALLBACK PageDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 			SetWindowTextW (GetDlgItem (GetParent (hwndDlg), IDCANCEL), GetString ("CANCEL"));
 
 			RefreshMultiBootControls (hwndDlg);
-
+			DisableIfGpt(GetDlgItem(hwndDlg, IDC_MULTI_BOOT));
 			EnableWindow (GetDlgItem (GetParent (hwndDlg), IDC_NEXT), nMultiBoot > 0);
 			EnableWindow (GetDlgItem (GetParent (hwndDlg), IDC_PREV), TRUE);
 			EnableWindow (GetDlgItem (GetParent (hwndDlg), IDCANCEL), TRUE);
@@ -4047,7 +4077,7 @@ BOOL CALLBACK PageDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 
 				for (ea = EAGetFirst (); ea != 0; ea = EAGetNext (ea))
 				{
-					if (EAIsFormatEnabled (ea))
+					if (EAIsFormatEnabled (ea) && (!SysEncInEffect () || bSystemIsGPT || EAIsMbrSysEncEnabled (ea)))
 						AddComboPair (GetDlgItem (hwndDlg, IDC_COMBO_BOX), EAGetName (buf, ea, 1), ea);
 				}
 
@@ -4061,13 +4091,13 @@ BOOL CALLBACK PageDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 
 				if (SysEncInEffect ())
 				{
-					hash_algo = DEFAULT_HASH_ALGORITHM_BOOT;
+					hash_algo = bSystemIsGPT? SHA512 : DEFAULT_HASH_ALGORITHM_BOOT;
 					RandSetHashFunction (hash_algo);
 
 					for (hid = FIRST_PRF_ID; hid <= LAST_PRF_ID; hid++)
 					{
 						// For now, we keep RIPEMD160 for system encryption
-						if (((hid == RIPEMD160) || !HashIsDeprecated (hid)) && HashForSystemEncryption (hid))
+						if (((hid == RIPEMD160) || !HashIsDeprecated (hid)) && (bSystemIsGPT || HashForSystemEncryption (hid)))
 							AddComboPair (GetDlgItem (hwndDlg, IDC_COMBO_BOX_HASH_ALGO), HashGetName(hid), hid);
 					}
 				}
@@ -4457,11 +4487,10 @@ BOOL CALLBACK PageDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 			SetWindowTextW (GetDlgItem (GetParent (hwndDlg), IDC_BOX_TITLE), GetString ("RESCUE_DISK"));
 			SetWindowTextW (GetDlgItem (GetParent (hwndDlg), IDC_NEXT), GetString ("NEXT"));
 			SetWindowTextW (GetDlgItem (GetParent (hwndDlg), IDC_PREV), GetString ("PREV"));
-			SetWindowTextW (GetDlgItem (hwndDlg, IDT_RESCUE_DISK_INFO), GetString ("RESCUE_DISK_INFO"));
+			SetWindowTextW (GetDlgItem (hwndDlg, IDT_RESCUE_DISK_INFO), bSystemIsGPT? GetString ("RESCUE_DISK_EFI_INFO"): GetString ("RESCUE_DISK_INFO"));
 			SetDlgItemText (hwndDlg, IDC_RESCUE_DISK_ISO_PATH, szRescueDiskISO);
 			EnableWindow (GetDlgItem (GetParent (hwndDlg), IDC_NEXT), (GetWindowTextLength (GetDlgItem (hwndDlg, IDC_RESCUE_DISK_ISO_PATH)) > 1));
 			EnableWindow (GetDlgItem (GetParent (hwndDlg), IDC_PREV), TRUE);
-			SetCheckBox (hCurPage, IDC_SKIP_RESCUE_VERIFICATION, bDontVerifyRescueDisk);
 
 			break;
 
@@ -4473,10 +4502,19 @@ BOOL CALLBACK PageDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 				SetWindowTextW (GetDlgItem (GetParent (hwndDlg), IDC_NEXT), GetString ("NEXT"));
 				SetWindowTextW (GetDlgItem (GetParent (hwndDlg), IDC_PREV), GetString ("PREV"));
 
-				StringCbPrintfW (szTmp, sizeof szTmp,
-					GetString (bDontVerifyRescueDisk ? "RESCUE_DISK_BURN_INFO_NO_CHECK" : "RESCUE_DISK_BURN_INFO"),
-					szRescueDiskISO, IsWindowsIsoBurnerAvailable() ? L"" : GetString ("RESCUE_DISK_BURN_INFO_NONWIN_ISO_BURNER"));
+				if (bSystemIsGPT)
+				{
+					StringCbPrintfW (szTmp, sizeof szTmp,
+						GetString (bDontVerifyRescueDisk ? "RESCUE_DISK_EFI_EXTRACT_INFO_NO_CHECK" : "RESCUE_DISK_EFI_EXTRACT_INFO"),
+						szRescueDiskISO, GetString ("RESCUE_DISK_EFI_EXTRACT_INFO_NOTE"));
+				}
+				else
+				{
+					StringCbPrintfW (szTmp, sizeof szTmp,
+						GetString (bDontVerifyRescueDisk ? "RESCUE_DISK_BURN_INFO_NO_CHECK" : "RESCUE_DISK_BURN_INFO"),
+						szRescueDiskISO, IsWindowsIsoBurnerAvailable() ? L"" : GetString ("RESCUE_DISK_BURN_INFO_NONWIN_ISO_BURNER"));
 
+				}
 				SetWindowTextW (GetDlgItem (hwndDlg, IDT_RESCUE_DISK_BURN_INFO), szTmp);
 				EnableWindow (GetDlgItem (GetParent (hwndDlg), IDC_NEXT), TRUE);
 
@@ -4485,14 +4523,21 @@ BOOL CALLBACK PageDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 				would be confusion and bug reports). */
 				EnableWindow (GetDlgItem (GetParent (hwndDlg), IDC_PREV), FALSE);
 
-				if (IsWindowsIsoBurnerAvailable())
-					SetWindowTextW (GetDlgItem (hwndDlg, IDC_DOWNLOAD_CD_BURN_SOFTWARE), GetString ("LAUNCH_WIN_ISOBURN"));
+				if (bSystemIsGPT)
+				{
+					ShowWindow (GetDlgItem (hwndDlg, IDC_DOWNLOAD_CD_BURN_SOFTWARE), SW_HIDE);
+				}
+				else
+				{
+					if (IsWindowsIsoBurnerAvailable())
+						SetWindowTextW (GetDlgItem (hwndDlg, IDC_DOWNLOAD_CD_BURN_SOFTWARE), GetString ("LAUNCH_WIN_ISOBURN"));
 
-				ToHyperlink (hwndDlg, IDC_DOWNLOAD_CD_BURN_SOFTWARE);
+					ToHyperlink (hwndDlg, IDC_DOWNLOAD_CD_BURN_SOFTWARE);
 
-				if (IsWindowsIsoBurnerAvailable() && !bDontVerifyRescueDisk)
-					LaunchWindowsIsoBurner (hwndDlg, szRescueDiskISO);
-			}
+					if (IsWindowsIsoBurnerAvailable() && !bDontVerifyRescueDisk)
+						LaunchWindowsIsoBurner (hwndDlg, szRescueDiskISO);
+				}
+			}			
 			break;
 
 		case SYSENC_RESCUE_DISK_VERIFIED_PAGE:
@@ -5449,7 +5494,7 @@ BOOL CALLBACK PageDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 
 			DialogBoxParamW (hInst,
 				MAKEINTRESOURCEW (IDD_BENCHMARK_DLG), hwndDlg,
-				(DLGPROC) BenchmarkDlgProc, (LPARAM) NULL);
+				(DLGPROC) BenchmarkDlgProc, (LPARAM) bSystemIsGPT);
 
 			bFastPollEnabled = TRUE;
 			bRandmixEnabled = TRUE;
@@ -5471,6 +5516,10 @@ BOOL CALLBACK PageDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 				Applink ("serpent", FALSE, "");
 			else if (wcscmp (name, L"Twofish") == 0)
 				Applink ("twofish", FALSE, "");
+			else if (wcscmp (name, L"GOST89") == 0)
+				Applink ("gost89", FALSE, "");
+			else if (wcscmp (name, L"Kuznyechik") == 0)
+				Applink ("kuznyechik", FALSE, "");
 			else if (wcscmp (name, L"Camellia") == 0)
 				Applink ("camellia", FALSE, "");
 			else if (EAGetCipherCount (nIndex) > 1)
@@ -5793,7 +5842,7 @@ BOOL CALLBACK PageDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 				{
 					HWND hHashAlgoItem = GetDlgItem (hwndDlg, IDC_COMBO_BOX_HASH_ALGO);
 					int selectedAlgo = (int) SendMessage (hHashAlgoItem, CB_GETITEMDATA, SendMessage (hHashAlgoItem, CB_GETCURSEL, 0, 0), 0);
-					if (!HashForSystemEncryption(selectedAlgo))
+					if (!bSystemIsGPT && !HashForSystemEncryption(selectedAlgo))
 					{
 						hash_algo = DEFAULT_HASH_ALGORITHM_BOOT;
 						RandSetHashFunction (DEFAULT_HASH_ALGORITHM_BOOT);
@@ -5981,6 +6030,14 @@ BOOL CALLBACK MainDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 				return 0;
 			}
 
+			try
+			{
+				bSystemIsGPT = BootEncObj->GetSystemDriveConfiguration().SystemPartition.IsGPT;
+			}
+			catch (...)
+			{
+			}
+
 			SendMessageW (GetDlgItem (hwndDlg, IDC_BOX_TITLE), WM_SETFONT, (WPARAM) hTitleFont, (LPARAM) TRUE);
 			SetWindowTextW (hwndDlg, lpszTitle);
 
@@ -6162,7 +6219,10 @@ BOOL CALLBACK MainDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 			}
 
 			SHGetFolderPath (NULL, CSIDL_MYDOCUMENTS, NULL, 0, szRescueDiskISO);
-			StringCbCatW (szRescueDiskISO, sizeof(szRescueDiskISO), L"\\VeraCrypt Rescue Disk.iso");
+			if (bSystemIsGPT)
+				StringCbCatW (szRescueDiskISO, sizeof(szRescueDiskISO), L"\\VeraCrypt Rescue Disk.zip");
+			else
+				StringCbCatW (szRescueDiskISO, sizeof(szRescueDiskISO), L"\\VeraCrypt Rescue Disk.iso");
 
 			if (IsOSAtLeast (WIN_VISTA))
 			{
@@ -7335,7 +7395,7 @@ BOOL CALLBACK MainDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 				nIndex = SendMessage (GetDlgItem (hCurPage, IDC_COMBO_BOX), CB_GETCURSEL, 0, 0);
 				nVolumeEA = (int) SendMessage (GetDlgItem (hCurPage, IDC_COMBO_BOX), CB_GETITEMDATA, nIndex, 0);
 
-				if (SysEncInEffect ()
+				if (!bSystemIsGPT && SysEncInEffect ()
 					&& EAGetCipherCount (nVolumeEA) > 1)		// Cascade?
 				{
 					if (AskWarnNoYes ("CONFIRM_CASCADE_FOR_SYS_ENCRYPTION", hwndDlg) == IDNO)
@@ -7919,40 +7979,43 @@ BOOL CALLBACK MainDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 					return 1;
 				}
 
-retryCDDriveCheck:
-				if (!bDontVerifyRescueDisk && !BootEncObj->IsCDRecorderPresent())
+				if (!bSystemIsGPT)
 				{
-					char *multiChoiceStr[] = { 0, "CD_BURNER_NOT_PRESENT",
-						"CD_BURNER_NOT_PRESENT_WILL_STORE_ISO",
-						"CD_BURNER_NOT_PRESENT_WILL_CONNECT_LATER",
-						"CD_BURNER_NOT_PRESENT_CONNECTED_NOW",
-						0 };
-
-					switch (AskMultiChoice ((void **) multiChoiceStr, FALSE, hwndDlg))
+retryCDDriveCheck:
+					if (!bDontVerifyRescueDisk && !BootEncObj->IsCDRecorderPresent())
 					{
-					case 1:
-						wchar_t msg[8192];
-						StringCchPrintfW (msg, array_capacity (msg), GetString ("CD_BURNER_NOT_PRESENT_WILL_STORE_ISO_INFO"), szRescueDiskISO);
-						WarningDirect (msg, hwndDlg);
+						char *multiChoiceStr[] = { 0, "CD_BURNER_NOT_PRESENT",
+							"CD_BURNER_NOT_PRESENT_WILL_STORE_ISO",
+							"CD_BURNER_NOT_PRESENT_WILL_CONNECT_LATER",
+							"CD_BURNER_NOT_PRESENT_CONNECTED_NOW",
+							0 };
 
-						Warning ("RESCUE_DISK_BURN_NO_CHECK_WARN", hwndDlg);
-						bDontVerifyRescueDisk = TRUE;
-						nNewPageNo = SYSENC_RESCUE_DISK_VERIFIED_PAGE;
-						break;
+						switch (AskMultiChoice ((void **) multiChoiceStr, FALSE, hwndDlg))
+						{
+						case 1:
+							wchar_t msg[8192];
+							StringCchPrintfW (msg, array_capacity (msg), GetString ("CD_BURNER_NOT_PRESENT_WILL_STORE_ISO_INFO"), szRescueDiskISO);
+							WarningDirect (msg, hwndDlg);
 
-					case 2:
-						AbortProcessSilent();
+							Warning ("RESCUE_DISK_BURN_NO_CHECK_WARN", hwndDlg);
+							bDontVerifyRescueDisk = TRUE;
+							nNewPageNo = SYSENC_RESCUE_DISK_VERIFIED_PAGE;
+							break;
 
-					case 3:
-						break;
+						case 2:
+							AbortProcessSilent();
 
-					default:
-						goto retryCDDriveCheck;
+						case 3:
+							break;
+
+						default:
+							goto retryCDDriveCheck;
+						}
 					}
-				}
 
-				if (IsWindowsIsoBurnerAvailable() && !bDontVerifyRescueDisk)
-					Info ("RESCUE_DISK_WIN_ISOBURN_PRELAUNCH_NOTE", hwndDlg);
+					if (IsWindowsIsoBurnerAvailable() && !bDontVerifyRescueDisk)
+						Info ("RESCUE_DISK_WIN_ISOBURN_PRELAUNCH_NOTE", hwndDlg);
+				}
 
 				NormalCursor ();
 			}
@@ -7970,8 +8033,15 @@ retryCDDriveCheck:
 						{
 							wchar_t szTmp[8000];
 
-							StringCbPrintfW (szTmp, sizeof(szTmp), GetString ("RESCUE_DISK_CHECK_FAILED"),
-								IsWindowsIsoBurnerAvailable () ? L"" : GetString ("RESCUE_DISK_CHECK_FAILED_SENTENCE_APPENDIX"));
+							if (bSystemIsGPT)
+							{
+								StringCbCopyW (szTmp, sizeof(szTmp), GetString ("RESCUE_DISK_EFI_CHECK_FAILED"));
+							}
+							else
+							{
+								StringCbPrintfW (szTmp, sizeof(szTmp), GetString ("RESCUE_DISK_CHECK_FAILED"),
+									IsWindowsIsoBurnerAvailable () ? L"" : GetString ("RESCUE_DISK_CHECK_FAILED_SENTENCE_APPENDIX"));
+							}
 
 							ErrorDirect (szTmp, hwndDlg);
 
@@ -8033,7 +8103,7 @@ retryCDDriveCheck:
 					}
 #endif
 
-					BootEncObj->Install (bHiddenOS ? true : false);
+					BootEncObj->Install (bHiddenOS ? true : false, hash_algo);
 				}
 				catch (Exception &e)
 				{
@@ -9136,17 +9206,19 @@ void ExtractCommandLine (HWND hwndDlg, wchar_t *lpszCommandLine)
 				{
 					wchar_t szTmp [TC_MAX_PATH + 8000] = {0};
 
-					GetArgumentValue (lpszCommandLineArgs, &i, nNoCommandLineArgs, szTmp, ARRAYSIZE (szTmp));
-
-					if (wcslen (szTmp) < 1)
+					if ((HAS_ARGUMENT == GetArgumentValue (lpszCommandLineArgs, &i, nNoCommandLineArgs, szTmp, ARRAYSIZE (szTmp)))
+						&& (wcslen (szTmp) >= 1)
+						)
+					{
+						memset (szFileName, 0, sizeof (szFileName));
+						StringCbCopyW (szFileName, sizeof (szFileName), szTmp);
+						DirectNonSysInplaceDecStartMode = TRUE;
+					}
+					else
 					{
 						// No valid volume path specified as command-line parameter
 						AbortProcess ("ERR_PARAMETER_INCORRECT");
 					}
-
-					memset (szFileName, 0, sizeof (szFileName));
-					StringCbCopyW (szFileName, sizeof (szFileName), szTmp);
-					DirectNonSysInplaceDecStartMode = TRUE;
 				}
 				break;
 
