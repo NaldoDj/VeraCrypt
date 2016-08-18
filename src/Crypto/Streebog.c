@@ -17,19 +17,19 @@
 /*
 * Iteration constants defined in standard.
 */
-ALIGN(16) static const unsigned long long buffer0[8] = { 0x0ULL, 0x0ULL, 0x0ULL,
+STREEBOG_ALIGN(16) static const unsigned long long buffer0[8] = { 0x0ULL, 0x0ULL, 0x0ULL,
     0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL };
 
 #ifndef __GOST3411_BIG_ENDIAN__
-ALIGN(16) static const unsigned long long buffer512[8] = {0x0000000000000200ULL,
+STREEBOG_ALIGN(16) static const unsigned long long buffer512[8] = {0x0000000000000200ULL,
     0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL };
 #else
-ALIGN(16) static const unsigned long long buffer512[8] = {{ 0x0002000000000000ULL,
+STREEBOG_ALIGN(16) static const unsigned long long buffer512[8] = {{ 0x0002000000000000ULL,
     0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL }};
 #endif
 
 #ifndef __GOST3411_BIG_ENDIAN__
-ALIGN(16) static const unsigned long long C[12][8] = {
+STREEBOG_ALIGN(16) static const unsigned long long C[12][8] = {
     {
          0xdd806559f2a64507ULL,
          0x05767436cc744d23ULL,
@@ -152,7 +152,7 @@ ALIGN(16) static const unsigned long long C[12][8] = {
     }
 };
 #else
-ALIGN(16) static const unsigned long long C[12][8] = {
+STREEBOG_ALIGN(16) static const unsigned long long C[12][8] = {
     {
          0x0745a6f2596580ddULL,
          0x234d74cc36747605ULL,
@@ -380,7 +380,7 @@ static const unsigned char Pi[256] = {
 /*
 * Precalculation of matrix A multiplication.
 */
-ALIGN(16) static const unsigned long long Ax[8][256] =
+STREEBOG_ALIGN(16) static const unsigned long long Ax[8][256] =
 {
 	{
 		0xd01f715b5c7ef8e6ULL, 0x16fa240980778325ULL, 0xa8a42e857ee049c8ULL,
@@ -1088,7 +1088,7 @@ ALIGN(16) static const unsigned long long Ax[8][256] =
 	}
 };
 #else
-ALIGN(16) static const unsigned long long Ax[8][256] =
+STREEBOG_ALIGN(16) static const unsigned long long Ax[8][256] =
 {
 	{
 		0xe6f87e5c5b711fd0ULL, 0x258377800924fa16ULL, 0xc849e07e852ea4a8ULL,
@@ -2229,6 +2229,7 @@ static void
 g(unsigned long long *h, const unsigned long long *N, const unsigned char *m)
 {
 #if CRYPTOPP_BOOL_SSE2_INTRINSICS_AVAILABLE
+#if CRYPTOPP_BOOL_SSE41_INTRINSICS_AVAILABLE
 	if (HasSSE41()) {
 		__m128i xmm0, xmm2, xmm4, xmm6; /* XMMR0-quadruple */
 		__m128i xmm1, xmm3, xmm5, xmm7; /* XMMR1-quadruple */
@@ -2255,8 +2256,9 @@ g(unsigned long long *h, const unsigned long long *N, const unsigned char *m)
 #if CRYPTOPP_BOOL_X86
 		_mm_empty();
 #endif
-	}
-	else if (HasSSE2()) {
+	} else
+#endif
+	if (HasSSE2()) {
 		__m128i xmm0, xmm2, xmm4, xmm6; /* XMMR0-quadruple */
 		__m128i xmm1, xmm3, xmm5, xmm7; /* XMMR1-quadruple */
 		unsigned int i;
@@ -2285,7 +2287,7 @@ g(unsigned long long *h, const unsigned long long *N, const unsigned char *m)
 	}	else 
 #endif
 	{
-		ALIGN(16) unsigned long long Ki[8], data[8];
+		STREEBOG_ALIGN(16) unsigned long long Ki[8], data[8];
 		unsigned int i;
 
 		XLPS(h, N, (data));
@@ -2320,7 +2322,7 @@ stage2(STREEBOG_CTX *CTX, const unsigned char *data)
 static void
 stage3(STREEBOG_CTX *CTX)
 {
-	ALIGN(16) unsigned long long buf[8];
+	STREEBOG_ALIGN(16) unsigned long long buf[8];
 
     memset(buf, 0x00, sizeof buf);
     memcpy(buf, (CTX->buffer), CTX->bufsize);
