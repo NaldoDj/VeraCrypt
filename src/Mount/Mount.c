@@ -721,6 +721,8 @@ void LoadSettingsAndCheckModified (HWND hwndDlg, BOOL bOnlyCheckModified, BOOL* 
 
 	ConfigReadCompareInt ("HideWaitingDialog", FALSE, &bHideWaitingDialog, bOnlyCheckModified, pbSettingsModified);
 
+	ConfigReadCompareInt ("UseSecureDesktop", FALSE, &bUseSecureDesktop, bOnlyCheckModified, pbSettingsModified);
+
 	ConfigReadCompareInt ("MountVolumesRemovable", FALSE, &defaultMountOptions.Removable, bOnlyCheckModified, pbSettingsModified);
 	ConfigReadCompareInt ("MountVolumesReadOnly", FALSE, &defaultMountOptions.ReadOnly, bOnlyCheckModified, pbSettingsModified);
 
@@ -878,6 +880,7 @@ void SaveSettings (HWND hwndDlg)
 		ConfigWriteInt ("PreserveTimestamps",				defaultMountOptions.PreserveTimestamp);
 		ConfigWriteInt ("ShowDisconnectedNetworkDrives",bShowDisconnectedNetworkDrives);
 		ConfigWriteInt ("HideWaitingDialog",				bHideWaitingDialog);
+		ConfigWriteInt ("UseSecureDesktop",					bUseSecureDesktop);
 
 		ConfigWriteInt ("EnableBackgroundTask",				bEnableBkgTask);
 		ConfigWriteInt ("CloseBackgroundTaskOnNoVolumes",	bCloseBkgTaskWhenNoVolumes);
@@ -3132,6 +3135,9 @@ BOOL CALLBACK PreferencesDlgProc (HWND hwndDlg, UINT msg, WPARAM wParam, LPARAM 
 			SendMessage (GetDlgItem (hwndDlg, IDC_HIDE_WAITING_DIALOG), BM_SETCHECK,
 				bHideWaitingDialog ? BST_CHECKED:BST_UNCHECKED, 0);
 
+			SendMessage (GetDlgItem (hwndDlg, IDC_SECURE_DESKTOP_PASSWORD_ENTRY), BM_SETCHECK,
+				bUseSecureDesktop ? BST_CHECKED:BST_UNCHECKED, 0);
+
 			SendMessage (GetDlgItem (hwndDlg, IDC_PREF_TEMP_CACHE_ON_MULTIPLE_MOUNT), BM_SETCHECK,
 						bCacheDuringMultipleMount ? BST_CHECKED:BST_UNCHECKED, 0);
 
@@ -3247,6 +3253,7 @@ BOOL CALLBACK PreferencesDlgProc (HWND hwndDlg, UINT msg, WPARAM wParam, LPARAM 
 			bPreserveTimestamp = defaultMountOptions.PreserveTimestamp = IsButtonChecked (GetDlgItem (hwndDlg, IDC_PRESERVE_TIMESTAMPS));
 			bShowDisconnectedNetworkDrives = IsButtonChecked (GetDlgItem (hwndDlg, IDC_SHOW_DISCONNECTED_NETWORK_DRIVES));
 			bHideWaitingDialog = IsButtonChecked (GetDlgItem (hwndDlg, IDC_HIDE_WAITING_DIALOG));
+			bUseSecureDesktop = IsButtonChecked (GetDlgItem (hwndDlg, IDC_SECURE_DESKTOP_PASSWORD_ENTRY));
 			bCacheDuringMultipleMount	= IsButtonChecked (GetDlgItem (hwndDlg, IDC_PREF_TEMP_CACHE_ON_MULTIPLE_MOUNT));
 			bWipeCacheOnExit				= IsButtonChecked (GetDlgItem (hwndDlg, IDC_PREF_WIPE_CACHE_ON_EXIT));
 			bWipeCacheOnAutoDismount		= IsButtonChecked (GetDlgItem (hwndDlg, IDC_PREF_WIPE_CACHE_ON_AUTODISMOUNT));
@@ -3297,7 +3304,7 @@ BOOL CALLBACK PreferencesDlgProc (HWND hwndDlg, UINT msg, WPARAM wParam, LPARAM 
 				int menuItem = TrackPopupMenu (popup, TPM_RETURNCMD | TPM_LEFTBUTTON, rect.left + 2, rect.top + 2, 0, hwndDlg, NULL);
 				DestroyMenu (popup);
 
-				SendMessage (MainDlg, WM_COMMAND, menuItem, NULL);
+				SendMessage (MainDlg, WM_COMMAND, menuItem, (LPARAM) hwndDlg);
 				return 1;
 			}
 			else
@@ -4537,7 +4544,7 @@ static int AskVolumePassword (HWND hwndDlg, Password *password, int *pkcs5, int 
 	dlgParam.pim = pim;
 	dlgParam.truecryptMode = truecryptMode;
 
-	result = DialogBoxParamW (hInst,
+	result = SecureDesktopDialogBoxParam (hInst,
 		MAKEINTRESOURCEW (IDD_PASSWORD_DLG), hwndDlg,
 		(DLGPROC) PasswordDlgProc, (LPARAM) &dlgParam);
 
@@ -6440,6 +6447,7 @@ BOOL CALLBACK MainDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 			bPreserveTimestamp = defaultMountOptions.PreserveTimestamp = TRUE;
 			bShowDisconnectedNetworkDrives = FALSE;
 			bHideWaitingDialog = FALSE;
+			bUseSecureDesktop = FALSE;
 
 			ResetWrongPwdRetryCount ();
 
@@ -7952,27 +7960,31 @@ BOOL CALLBACK MainDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 
 		if (lw == IDM_HOTKEY_SETTINGS)
 		{
+			HWND hwndParent = (lParam != 0)? (HWND) lParam : hwndDlg;
 			DialogBoxParamW (hInst,
-				MAKEINTRESOURCEW (IDD_HOTKEYS_DLG), hwndDlg,
+				MAKEINTRESOURCEW (IDD_HOTKEYS_DLG), hwndParent,
 				(DLGPROC) HotkeysDlgProc, (LPARAM) 0);
 			return 1;
 		}
 
 		if (lw == IDM_PERFORMANCE_SETTINGS)
 		{
-			DialogBoxParamW (hInst, MAKEINTRESOURCEW (IDD_PERFORMANCE_SETTINGS), hwndDlg, (DLGPROC) PerformanceSettingsDlgProc, 0);
+			HWND hwndParent = (lParam != 0)? (HWND) lParam : hwndDlg;
+			DialogBoxParamW (hInst, MAKEINTRESOURCEW (IDD_PERFORMANCE_SETTINGS), hwndParent, (DLGPROC) PerformanceSettingsDlgProc, 0);
 			return 1;
 		}
 
 		if (lw == IDM_DEFAULT_KEYFILES)
 		{
-			KeyfileDefaultsDlg (hwndDlg);
+			HWND hwndParent = (lParam != 0)? (HWND) lParam : hwndDlg;
+			KeyfileDefaultsDlg (hwndParent);
 			return 1;
 		}
 
 		if (lw == IDM_DEFAULT_MOUNT_PARAMETERS)
 		{
-			DialogBoxParamW (hInst, MAKEINTRESOURCEW (IDD_DEFAULT_MOUNT_PARAMETERS), hwndDlg, (DLGPROC) DefaultMountParametersDlgProc, 0);
+			HWND hwndParent = (lParam != 0)? (HWND) lParam : hwndDlg;
+			DialogBoxParamW (hInst, MAKEINTRESOURCEW (IDD_DEFAULT_MOUNT_PARAMETERS), hwndParent, (DLGPROC) DefaultMountParametersDlgProc, 0);
 			return 1;
 		}
 
@@ -8088,19 +8100,22 @@ BOOL CALLBACK MainDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 
 		if (lw == IDM_TOKEN_PREFERENCES)
 		{
-			SecurityTokenPreferencesDialog (hwndDlg);
+			HWND hwndParent = (lParam != 0)? (HWND) lParam : hwndDlg;
+			SecurityTokenPreferencesDialog (hwndParent);
 			return 1;
 		}
 
 		if (lw == IDM_SYSENC_SETTINGS || lw == IDM_SYS_ENC_SETTINGS)
 		{
-			DialogBoxParamW (hInst, MAKEINTRESOURCEW (bSystemIsGPT? IDD_EFI_SYSENC_SETTINGS : IDD_SYSENC_SETTINGS), hwndDlg, (DLGPROC) BootLoaderPreferencesDlgProc, 0);
+			HWND hwndParent = (lParam != 0)? (HWND) lParam : hwndDlg;
+			DialogBoxParamW (hInst, MAKEINTRESOURCEW (bSystemIsGPT? IDD_EFI_SYSENC_SETTINGS : IDD_SYSENC_SETTINGS), hwndParent, (DLGPROC) BootLoaderPreferencesDlgProc, 0);
 			return 1;
 		}
 
 		if (lw == IDM_SYS_FAVORITES_SETTINGS)
 		{
-			OrganizeFavoriteVolumes (hwndDlg, true);
+			HWND hwndParent = (lParam != 0)? (HWND) lParam : hwndDlg;
+			OrganizeFavoriteVolumes (hwndParent, true);
 			return 1;
 		}
 
@@ -8176,7 +8191,8 @@ BOOL CALLBACK MainDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 		if (lw == IDM_LANGUAGE)
 		{
 			BOOL p;
-			if (DialogBoxParamW (hInst, MAKEINTRESOURCEW (IDD_LANGUAGE), hwndDlg,
+			HWND wndParent = (lParam != 0)? (HWND) lParam : hwndDlg;
+			if (DialogBoxParamW (hInst, MAKEINTRESOURCEW (IDD_LANGUAGE), wndParent,
 				(DLGPROC) LanguageDlgProc, (LPARAM) 0) == IDOK)
 			{
 				LoadLanguageFile ();
@@ -8441,6 +8457,7 @@ void ExtractCommandLine (HWND hwndDlg, wchar_t *lpszCommandLine)
 				OptionPim,
 				OptionTryEmptyPassword,
 				OptionNoWaitDlg,
+				OptionSecureDesktop,
 			};
 
 			argument args[]=
@@ -8468,6 +8485,7 @@ void ExtractCommandLine (HWND hwndDlg, wchar_t *lpszCommandLine)
 				{ CommandWipeCache,				L"/wipecache",		L"/w", FALSE },
 				{ OptionTryEmptyPassword,		L"/tryemptypass",	NULL, FALSE },
 				{ OptionNoWaitDlg,			L"/nowaitdlg",	NULL, FALSE },
+				{ OptionSecureDesktop,			L"/secureDesktop",	NULL, FALSE },
 			};
 
 			argumentspec as;
@@ -8533,6 +8551,25 @@ void ExtractCommandLine (HWND hwndDlg, wchar_t *lpszCommandLine)
 							bCmdHideWaitingDialog = FALSE;
 						else if (!_wcsicmp(szTmp,L"y") || !_wcsicmp(szTmp,L"yes"))
 							bCmdHideWaitingDialog = TRUE;
+						else
+							AbortProcess ("COMMAND_LINE_ERROR");
+					}
+				}
+				break;
+
+			case OptionSecureDesktop:
+				{
+					wchar_t szTmp[16] = {0};
+					bCmdUseSecureDesktop = TRUE;
+					bCmdUseSecureDesktopValid = TRUE;
+
+					if (HAS_ARGUMENT == GetArgumentValue (lpszCommandLineArgs, &i, nNoCommandLineArgs,
+						     szTmp, ARRAYSIZE (szTmp)))
+					{
+						if (!_wcsicmp(szTmp,L"n") || !_wcsicmp(szTmp,L"no"))
+							bCmdUseSecureDesktop = FALSE;
+						else if (!_wcsicmp(szTmp,L"y") || !_wcsicmp(szTmp,L"yes"))
+							bCmdUseSecureDesktop = TRUE;
 						else
 							AbortProcess ("COMMAND_LINE_ERROR");
 					}
@@ -8964,6 +9001,7 @@ static BOOL StartSystemFavoritesService ()
 	DeviceChangeBroadcastDisabled = TRUE;
 	bShowDisconnectedNetworkDrives = TRUE;
 	bHideWaitingDialog = TRUE;
+	bUseSecureDesktop = FALSE;
 
 	InitOSVersionInfo();
 
