@@ -3416,7 +3416,7 @@ BOOL QueryFreeSpace (HWND hwndDlg, HWND hwndTextBox, BOOL display)
 	}
 	else
 	{
-		DISK_GEOMETRY driveInfo;
+		DISK_GEOMETRY_EX driveInfo;
 		PARTITION_INFORMATION diskInfo;
 		BOOL piValid = FALSE;
 		BOOL gValid = FALSE;
@@ -3465,8 +3465,7 @@ BOOL QueryFreeSpace (HWND hwndDlg, HWND hwndTextBox, BOOL display)
 			LARGE_INTEGER lDiskFree;
 
 			// Drive geometry info is used only when GetPartitionInfo() fails
-			lDiskFree.QuadPart = driveInfo.Cylinders.QuadPart * driveInfo.BytesPerSector *
-				driveInfo.SectorsPerTrack * driveInfo.TracksPerCylinder;
+			lDiskFree.QuadPart = driveInfo.DiskSize.QuadPart;
 
 			nVolumeSize = lDiskFree.QuadPart;
 
@@ -7665,8 +7664,6 @@ BOOL CALLBACK MainDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 
 							/* Hidden volume host successfully mounted as read-only */
 
-							WaitCursor ();
-
 							// Verify that the outer volume contains a suitable file system, retrieve cluster size, and
 							// scan the volume bitmap
 							if (!IsAdmin () && IsUacSupported ())
@@ -10320,7 +10317,7 @@ static DWORD GetFormatSectorSize ()
 	if (!bDevice)
 		return TC_SECTOR_SIZE_FILE_HOSTED_VOLUME;
 
-	DISK_GEOMETRY geometry;
+	DISK_GEOMETRY_EX geometry;
 
 	if (!GetDriveGeometry (szDiskFile, &geometry))
 	{
@@ -10328,5 +10325,5 @@ static DWORD GetFormatSectorSize ()
 		AbortProcessSilent();
 	}
 
-	return geometry.BytesPerSector;
+	return geometry.Geometry.BytesPerSector;
 }

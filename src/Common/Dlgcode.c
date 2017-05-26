@@ -59,6 +59,7 @@
 #include "Xts.h"
 #include "Boot/Windows/BootCommon.h"
 #include "Progress.h"
+#include "zip.h"
 
 #ifdef TCMOUNT
 #include "Mount/Mount.h"
@@ -3101,6 +3102,7 @@ BOOL GetDriveLabel (int driveNo, wchar_t *label, int labelSize)
 	return GetVolumeInformationW (root, label, labelSize / 2, NULL, NULL, &fileSystemFlags, NULL, 0);
 }
 
+#ifndef SETUP
 
 /* Stores the device path of the system partition in SysPartitionDevicePath and the device path of the system drive
 in SysDriveDevicePath.
@@ -3253,6 +3255,7 @@ int IsNonSysPartitionOnSysDrive (const wchar_t *path)
 	}
 }
 
+#endif //!SETUP
 
 wstring GetSysEncryptionPretestInfo2String (void)
 {
@@ -3476,6 +3479,7 @@ char * GetLegalNotices ()
 	return buf;
 }
 
+#ifndef SETUP
 
 BOOL CALLBACK RawDevicesDlgProc (HWND hwndDlg, UINT msg, WPARAM wParam, LPARAM lParam)
 {
@@ -3834,6 +3838,7 @@ BOOL CALLBACK RawDevicesDlgProc (HWND hwndDlg, UINT msg, WPARAM wParam, LPARAM l
 	return 0;
 }
 
+#endif //!SETUP
 
 BOOL DoDriverInstall (HWND hwndDlg)
 {
@@ -6967,6 +6972,28 @@ void CorrectFileName (wchar_t* fileName)
 	}
 }
 
+void CorrectFileName (std::wstring& fileName)
+{
+	/* replace '/' by '\' */
+	size_t i, len = fileName.length();
+	for (i = 0; i < len; i++)
+	{
+		if (fileName [i] == L'/')
+			fileName [i] = L'\\';
+	}
+}
+
+void CorrectURL (wchar_t* fileName)
+{
+	/* replace '\' by '/' */
+	size_t i, len = wcslen (fileName);
+	for (i = 0; i < len; i++)
+	{
+		if (fileName [i] == L'\\')
+			fileName [i] = L'/';
+	}
+}
+
 void IncreaseWrongPwdRetryCount (int count)
 {
 	WrongPwdRetryCounter += count;
@@ -7201,12 +7228,83 @@ void BroadcastDeviceChange (WPARAM message, int nDosDriveNo, DWORD driveMap)
 	IgnoreWmDeviceChange = FALSE;
 }
 
-BOOL GetPhysicalDriveAlignment(UINT nDriveNumber, STORAGE_ACCESS_ALIGNMENT_DESCRIPTOR* pDesc)
+static BOOL GetDeviceStorageProperty (HANDLE hDevice, STORAGE_PROPERTY_ID propertyId, DWORD dwDescSize, void* pDesc)
 {
 	DWORD dwRet = NO_ERROR;
 
 	if (!pDesc)
 		return FALSE;
+
+	ZeroMemory (pDesc, dwDescSize);
+
+	// Set the input data structure
+	STORAGE_PROPERTY_QUERY storagePropertyQuery;
+	ZeroMemory(&storagePropertyQuery, sizeof(STORAGE_PROPERTY_QUERY));
+	storagePropertyQuery.PropertyId = propertyId;
+	storagePropertyQuery.QueryType = PropertyStandardQuery;
+
+	// Get the necessary output buffer size
+	STORAGE_DESCRIPTOR_HEADER descHeader = {0};
+	DWORD dwBytesReturned = 0;
+	BOOL bRet = ::DeviceIoControl(hDevice, IOCTL_STORAGE_QUERY_PROPERTY,
+		&storagePropertyQuery, sizeof(STORAGE_PROPERTY_QUERY),
+		&descHeader, sizeof(STORAGE_DESCRIPTOR_HEADER),
+		&dwBytesReturned, NULL);
+	if (bRet)
+	{
+		if (dwBytesReturned == sizeof(STORAGE_DESCRIPTOR_HEADER))
+		{
+			unsigned char* outputBuffer = (unsigned char*) TCalloc (descHeader.Size);
+			bRet = ::DeviceIoControl(hDevice, IOCTL_STORAGE_QUERY_PROPERTY,
+				&storagePropertyQuery, sizeof(STORAGE_PROPERTY_QUERY),
+				outputBuffer, descHeader.Size,
+				&dwBytesReturned, NULL);
+			if (bRet)
+			{
+				if (dwBytesReturned >= dwDescSize)
+				{
+					memcpy (pDesc, outputBuffer, dwDescSize);
+					((STORAGE_DESCRIPTOR_HEADER*)pDesc)->Version = dwDescSize;
+					((STORAGE_DESCRIPTOR_HEADER*)pDesc)->Size = dwDescSize;
+				}
+				else
+				{
+					bRet = FALSE;
+					dwRet = ERROR_UNHANDLED_ERROR;
+				}
+			}
+			else
+				dwRet = ::GetLastError();
+			TCfree (outputBuffer);
+		}
+		else
+		{
+			bRet = FALSE;
+			dwRet = ERROR_UNHANDLED_ERROR;
+		}
+	}
+	else
+		dwRet = ::GetLastError();
+	::CloseHandle(hDevice);
+
+	if (!bRet)
+	{
+		SetLastError (dwRet);
+		return FALSE;
+	}
+	else
+		return TRUE;
+}
+
+BOOL GetPhysicalDriveStorageInformation(UINT nDriveNumber, STORAGE_ACCESS_ALIGNMENT_DESCRIPTOR* pAlignmentDesc, STORAGE_ADAPTER_DESCRIPTOR* pAdapterDesc)
+{
+	DWORD dwRet = NO_ERROR;
+
+	if (!pAlignmentDesc || pAdapterDesc)
+	{
+		SetLastError (ERROR_INVALID_PARAMETER);
+		return FALSE;
+	}
 
 	// Format physical drive path (may be '\\.\PhysicalDrive0', '\\.\PhysicalDrive1' and so on).
 	TCHAR strDrivePath[512];
@@ -7219,18 +7317,8 @@ BOOL GetPhysicalDriveAlignment(UINT nDriveNumber, STORAGE_ACCESS_ALIGNMENT_DESCR
 	if(INVALID_HANDLE_VALUE == hDevice)
 		return FALSE;
 
-	// Set the input data structure
-	STORAGE_PROPERTY_QUERY storagePropertyQuery;
-	ZeroMemory(&storagePropertyQuery, sizeof(STORAGE_PROPERTY_QUERY));
-	storagePropertyQuery.PropertyId = StorageAccessAlignmentProperty;
-	storagePropertyQuery.QueryType = PropertyStandardQuery;
-
-	// Get the necessary output buffer size
-	DWORD dwBytesReturned = 0;
-	BOOL bRet = ::DeviceIoControl(hDevice, IOCTL_STORAGE_QUERY_PROPERTY,
-		&storagePropertyQuery, sizeof(STORAGE_PROPERTY_QUERY),
-		pDesc, sizeof(STORAGE_ACCESS_ALIGNMENT_DESCRIPTOR),
-		&dwBytesReturned, NULL);
+	BOOL bRet = (GetDeviceStorageProperty (hDevice, StorageAccessAlignmentProperty, sizeof (STORAGE_ACCESS_ALIGNMENT_DESCRIPTOR), pAlignmentDesc)
+		|| GetDeviceStorageProperty (hDevice, StorageAdapterProperty, sizeof (STORAGE_ADAPTER_DESCRIPTOR), pAdapterDesc))? TRUE : FALSE;
 	dwRet = ::GetLastError();
 	::CloseHandle(hDevice);
 
@@ -7242,6 +7330,8 @@ BOOL GetPhysicalDriveAlignment(UINT nDriveNumber, STORAGE_ACCESS_ALIGNMENT_DESCR
 	else
 		return TRUE;
 }
+
+#ifndef SETUP
 
 /************************************************************/
 
@@ -7592,6 +7682,13 @@ retry:
 
 	if (!bDevice)
 	{
+		// put default values
+		mount.BytesPerSector = 512;
+		mount.BytesPerPhysicalSector = 512;
+		mount.MaximumTransferLength = 65536;
+		mount.MaximumPhysicalPages = 17;
+		mount.AlignmentMask = 0;
+
 		// UNC path
 		if (path.find (L"\\\\") == 0)
 		{
@@ -7626,11 +7723,23 @@ retry:
 						{
 							if (extents.NumberOfDiskExtents > 0)
 							{
-								STORAGE_ACCESS_ALIGNMENT_DESCRIPTOR desc;
-								if (GetPhysicalDriveAlignment (extents.Extents[0].DiskNumber, &desc))
+								STORAGE_ACCESS_ALIGNMENT_DESCRIPTOR accessDesc;
+								STORAGE_ADAPTER_DESCRIPTOR adapterDesc;
+
+								if (GetPhysicalDriveStorageInformation (extents.Extents[0].DiskNumber, &accessDesc, &adapterDesc))
 								{
-									mount.BytesPerSector = desc.BytesPerLogicalSector;
-									mount.BytesPerPhysicalSector = desc.BytesPerPhysicalSector;
+									if (accessDesc.Size >= sizeof (STORAGE_ACCESS_ALIGNMENT_DESCRIPTOR))
+									{
+										mount.BytesPerSector = accessDesc.BytesPerLogicalSector;
+										mount.BytesPerPhysicalSector = accessDesc.BytesPerPhysicalSector;
+									}
+
+									if (adapterDesc.Size >= sizeof (STORAGE_ADAPTER_DESCRIPTOR))
+									{
+										mount.MaximumTransferLength = adapterDesc.MaximumTransferLength;
+										mount.MaximumPhysicalPages = adapterDesc.MaximumPhysicalPages;
+										mount.AlignmentMask = adapterDesc.AlignmentMask;
+									}
 								}
 							}
 						}
@@ -7957,6 +8066,7 @@ BOOL UnmountVolumeAfterFormatExCall (HWND hwndDlg, int nDosDriveNo)
 	return UnmountVolumeBase (hwndDlg, nDosDriveNo, FALSE, TRUE);
 }
 
+#endif //!SETUP
 
 BOOL IsPasswordCacheEmpty (void)
 {
@@ -8153,29 +8263,31 @@ BOOL GetDeviceInfo (const wchar_t *deviceName, DISK_PARTITION_INFO_STRUCT *info)
 	return DeviceIoControl (hDriver, TC_IOCTL_GET_DRIVE_PARTITION_INFO, info, sizeof (*info), info, sizeof (*info), &dwResult, NULL);
 }
 
-
-BOOL GetDriveGeometry (const wchar_t *deviceName, PDISK_GEOMETRY diskGeometry)
+#ifndef SETUP
+BOOL GetDriveGeometry (const wchar_t *deviceName, PDISK_GEOMETRY_EX diskGeometry)
 {
 	BOOL bResult;
 	DWORD dwResult;
-	DISK_GEOMETRY_STRUCT dg;
+	DISK_GEOMETRY_EX_STRUCT dg;
 
 	memset (&dg, 0, sizeof(dg));
 	StringCbCopyW ((PWSTR) &dg.deviceName, sizeof(dg.deviceName), deviceName);
 
-	bResult = DeviceIoControl (hDriver, TC_IOCTL_GET_DRIVE_GEOMETRY, &dg,
+	bResult = DeviceIoControl (hDriver, VC_IOCTL_GET_DRIVE_GEOMETRY_EX, &dg,
 		sizeof (dg), &dg, sizeof (dg), &dwResult, NULL);
 
 	if (bResult && (dwResult == sizeof (dg)) && dg.diskGeometry.BytesPerSector)
 	{
-		memcpy (diskGeometry, &dg.diskGeometry, sizeof (DISK_GEOMETRY));
+		ZeroMemory (diskGeometry, sizeof (PDISK_GEOMETRY_EX));
+		memcpy (&diskGeometry->Geometry, &dg.diskGeometry, sizeof (DISK_GEOMETRY));
+		diskGeometry->DiskSize.QuadPart = dg.DiskSize.QuadPart;
 		return TRUE;
 	}
 	else
 		return FALSE;
 }
 
-BOOL GetPhysicalDriveGeometry (int driveNumber, PDISK_GEOMETRY diskGeometry)
+BOOL GetPhysicalDriveGeometry (int driveNumber, PDISK_GEOMETRY_EX diskGeometry)
 {
 	HANDLE hDev;
 	BOOL bResult = FALSE;
@@ -8187,11 +8299,11 @@ BOOL GetPhysicalDriveGeometry (int driveNumber, PDISK_GEOMETRY diskGeometry)
 	{
 		DWORD bytesRead = 0;
 
-		ZeroMemory (diskGeometry, sizeof (DISK_GEOMETRY));
+		ZeroMemory (diskGeometry, sizeof (DISK_GEOMETRY_EX));
 
-		if (	DeviceIoControl (hDev, IOCTL_DISK_GET_DRIVE_GEOMETRY, NULL, 0, diskGeometry, sizeof (DISK_GEOMETRY), &bytesRead, NULL)
-			&& (bytesRead == sizeof (DISK_GEOMETRY))
-			&& diskGeometry->BytesPerSector)
+		if (	DeviceIoControl (hDev, IOCTL_DISK_GET_DRIVE_GEOMETRY_EX, NULL, 0, diskGeometry, sizeof (DISK_GEOMETRY_EX), &bytesRead, NULL)
+			&& (bytesRead == sizeof (DISK_GEOMETRY_EX))
+			&& diskGeometry->Geometry.BytesPerSector)
 		{
 			bResult = TRUE;
 		}
@@ -8201,7 +8313,7 @@ BOOL GetPhysicalDriveGeometry (int driveNumber, PDISK_GEOMETRY diskGeometry)
 
 	return bResult;
 }
-
+#endif
 
 // Returns drive letter number assigned to device (-1 if none)
 int GetDiskDeviceDriveLetter (PWSTR deviceName)
@@ -8565,6 +8677,63 @@ BOOL TCCopyFile (wchar_t *sourceFileName, wchar_t *destinationFile)
 	}
 
 	return TCCopyFileBase (src, dst);
+}
+
+BOOL DecompressZipToDir (const unsigned char *inputBuffer, DWORD inputLength, const wchar_t *destinationDir, ProgressFn progressFnPtr, HWND hwndDlg)
+{
+	BOOL res = TRUE;
+	zip_error_t zerr;
+	zip_int64_t numFiles, i;
+	zip_stat_t sb;
+	zip_source_t* zsrc = zip_source_buffer_create (inputBuffer, inputLength, 0, &zerr);
+	if (!zsrc)
+		return FALSE;
+	zip_t* z = zip_open_from_source (zsrc, ZIP_CHECKCONS | ZIP_RDONLY, &zerr);
+	if (!z)
+	{
+		zip_source_free (zsrc);
+		return FALSE;
+	}
+
+	finally_do_arg (zip_t*, z, { zip_close (finally_arg); });
+
+	numFiles = zip_get_num_entries (z, 0);
+	if (numFiles <= 0)
+		return FALSE;
+
+	for (i = 0; (i < numFiles) && res; i++)
+	{
+		ZeroMemory (&sb, sizeof (sb));
+		if ((0 == zip_stat_index (z, i, 0, &sb)) && (sb.valid & (ZIP_STAT_NAME | ZIP_STAT_SIZE)) && (sb.size > 0))
+		{
+			std::wstring wname = Utf8StringToWide (sb.name);
+			CorrectFileName (wname);
+
+			std::wstring filePath = destinationDir + wname;
+			size_t pos = filePath.find_last_of (L"/\\");
+			// create the parent directory if it doesn't exist
+			if (pos != std::wstring::npos)
+			{
+				SHCreateDirectoryEx (NULL, filePath.substr (0, pos).c_str(), NULL);
+			}
+
+			zip_file_t *f = zip_fopen_index (z, i, 0);
+			if (f)
+			{
+				ByteArray buffer((ByteArray::size_type) sb.size);
+
+				zip_fread (f, buffer.data(), sb.size);
+				zip_fclose (f);
+
+				if (progressFnPtr)
+					progressFnPtr (hwndDlg, filePath.c_str());
+
+				res = SaveBufferToFile ((char *) buffer.data(), filePath.c_str(), (DWORD) buffer.size(), FALSE, TRUE);
+			}			
+		}
+	}
+
+	return res;
 }
 
 // If bAppend is TRUE, the buffer is appended to an existing file. If bAppend is FALSE, any existing file
@@ -10159,143 +10328,168 @@ std::wstring GetWindowsEdition ()
 	return osname;
 }
 
+#ifdef SETUP
+extern wchar_t InstallationPath[TC_MAX_PATH];
+#endif
 
 void Applink (char *dest, BOOL bSendOS, char *extraOutput)
 {
-	char url [MAX_URL_LENGTH];
+	wchar_t url [MAX_URL_LENGTH] = {0};
+	wchar_t page[TC_MAX_PATH] = {0};
+	wchar_t installDir[TC_MAX_PATH] = {0};
+	BOOL buildUrl = TRUE;
+	int r;
 
 	ArrowWaitCursor ();
+	
+#ifdef SETUP
+	StringCbCopyW (installDir, sizeof (installDir), InstallationPath);
+#else
+	GetModPath (installDir, TC_MAX_PATH);
+#endif
 
-	// sprintf_s (url, sizeof (url), TC_APPLINK "%s%s&dest=%s", bSendOS ? ("&os=" + GetWindowsEdition()).c_str() : "", extraOutput, dest);
 	if (strcmp(dest, "donate") == 0)
 	{
-		StringCbCopyA (url, sizeof (url),"https://veracrypt.codeplex.com/wikipage?title=Donation#VeraCryptDonation");
+		StringCbCopyW (page, sizeof (page),L"Donation.html");
 	}
 	else if (strcmp(dest, "main") == 0)
 	{
-		StringCbCopyA (url, sizeof (url),TC_HOMEPAGE);
+		StringCbCopyW (url, sizeof (url), TC_HOMEPAGE);
+		buildUrl = FALSE;
 	}
 	else if (strcmp(dest,"localizations") == 0)
 	{
-		StringCbCopyA (url, sizeof (url),"https://veracrypt.codeplex.com/wikipage?title=Language%20Packs");
+		StringCbCopyW (page, sizeof (page),L"Language%20Packs.html");
 	}
 	else if (strcmp(dest, "beginnerstutorial") == 0 || strcmp(dest,"tutorial") == 0)
 	{
-		StringCbCopyA (url, sizeof (url),"https://veracrypt.codeplex.com/wikipage?title=Beginner%27s%20Tutorial");
+		StringCbCopyW (page, sizeof (page),L"Beginner%27s%20Tutorial.html");
 	}
 	else if (strcmp(dest, "releasenotes") == 0 || strcmp(dest, "history") == 0)
 	{
-		StringCbCopyA (url, sizeof (url),"https://veracrypt.codeplex.com/wikipage?title=Release%20Notes");
+		StringCbCopyW (page, sizeof (page),L"Release%20Notes.html");
 	}
 	else if (strcmp(dest, "hwacceleration") == 0)
 	{
-		StringCbCopyA (url, sizeof (url),"https://veracrypt.codeplex.com/wikipage?title=Hardware%20Acceleration");
+		StringCbCopyW (page, sizeof (page),L"Hardware%20Acceleration.html");
 	}
 	else if (strcmp(dest, "parallelization") == 0)
 	{
-		StringCbCopyA (url, sizeof (url),"https://veracrypt.codeplex.com/wikipage?title=Parallelization");
+		StringCbCopyW (page, sizeof (page),L"Parallelization.html");
 	}
 	else if (strcmp(dest, "help") == 0)
 	{
-		StringCbCopyA (url, sizeof (url),"https://veracrypt.codeplex.com/documentation");
+		StringCbCopyW (page, sizeof (page),L"Documentation.html");
 	}
 	else if (strcmp(dest, "keyfiles") == 0)
 	{
-		StringCbCopyA (url, sizeof (url),"https://veracrypt.codeplex.com/wikipage?title=Keyfiles");
+		StringCbCopyW (page, sizeof (page),L"Keyfiles.html");
 	}
 	else if (strcmp(dest, "introcontainer") == 0)
 	{
-		StringCbCopyA (url, sizeof (url),"https://veracrypt.codeplex.com/wikipage?title=Creating%20New%20Volumes");
+		StringCbCopyW (page, sizeof (page),L"Creating%20New%20Volumes.html");
 	}
 	else if (strcmp(dest, "introsysenc") == 0)
 	{
-		StringCbCopyA (url, sizeof (url),"https://veracrypt.codeplex.com/wikipage?title=System%20Encryption");
+		StringCbCopyW (page, sizeof (page),L"System%20Encryption.html");
 	}
 	else if (strcmp(dest, "hiddensysenc") == 0)
 	{
-		StringCbCopyA (url, sizeof (url),"https://veracrypt.codeplex.com/wikipage?title=VeraCrypt%20Hidden%20Operating%20System");
+		StringCbCopyW (page, sizeof (page),L"VeraCrypt%20Hidden%20Operating%20System.html");
 	}
 	else if (strcmp(dest, "sysencprogressinfo") == 0)
 	{
-		StringCbCopyA (url, sizeof (url),"https://veracrypt.codeplex.com/wikipage?title=System%20Encryption");
+		StringCbCopyW (page, sizeof (page),L"System%20Encryption.html");
 	}
 	else if (strcmp(dest, "hiddenvolume") == 0)
 	{
-		StringCbCopyA (url, sizeof (url),"https://veracrypt.codeplex.com/wikipage?title=Hidden%20Volume");
+		StringCbCopyW (page, sizeof (page),L"Hidden%20Volume.html");
 	}
 	else if (strcmp(dest, "aes") == 0)
 	{
-		StringCbCopyA (url, sizeof (url),"https://veracrypt.codeplex.com/wikipage?title=AES");
+		StringCbCopyW (page, sizeof (page),L"AES.html");
 	}
 	else if (strcmp(dest, "serpent") == 0)
 	{
-		StringCbCopyA (url, sizeof (url),"https://veracrypt.codeplex.com/wikipage?title=Serpent");
+		StringCbCopyW (page, sizeof (page),L"Serpent.html");
 	}
 	else if (strcmp(dest, "twofish") == 0)
 	{
-		StringCbCopyA (url, sizeof (url),"https://veracrypt.codeplex.com/wikipage?title=Twofish");
-	}
-	else if (strcmp(dest, "gost89") == 0)
-	{
-		StringCbCopyA (url, sizeof (url),"https://veracrypt.codeplex.com/wikipage?title=GOST89");
+		StringCbCopyW (page, sizeof (page),L"Twofish.html");
 	}
 	else if (strcmp(dest, "kuznyechik") == 0)
 	{
-		StringCbCopyA (url, sizeof (url),"https://veracrypt.codeplex.com/wikipage?title=Kuznyechik");
+		StringCbCopyW (page, sizeof (page),L"Kuznyechik.html");
 	}
 	else if (strcmp(dest, "camellia") == 0)
 	{
-		StringCbCopyA (url, sizeof (url),"https://veracrypt.codeplex.com/wikipage?title=Camellia");
+		StringCbCopyW (page, sizeof (page),L"Camellia.html");
 	}
 	else if (strcmp(dest, "cascades") == 0)
 	{
-		StringCbCopyA (url, sizeof (url),"https://veracrypt.codeplex.com/wikipage?title=Cascades");
+		StringCbCopyW (page, sizeof (page),L"Cascades.html");
 	}
 	else if (strcmp(dest, "hashalgorithms") == 0)
 	{
-		StringCbCopyA (url, sizeof (url),"https://veracrypt.codeplex.com/wikipage?title=Hash%20Algorithms");
+		StringCbCopyW (page, sizeof (page),L"Hash%20Algorithms.html");
 	}
 	else if (strcmp(dest, "isoburning") == 0)
 	{
-		StringCbCopyA (url, sizeof (url),"https://cdburnerxp.se/en/home");
+		StringCbCopyW (url, sizeof (url),L"https://cdburnerxp.se/en/home");
+		buildUrl = FALSE;
 	}
 	else if (strcmp(dest, "sysfavorites") == 0)
 	{
-		StringCbCopyA (url, sizeof (url),"https://veracrypt.codeplex.com/wikipage?title=System%20Favorite%20Volumes");
+		StringCbCopyW (page, sizeof (page),L"System%20Favorite%20Volumes.html");
 	}
 	else if (strcmp(dest, "favorites") == 0)
 	{
-		StringCbCopyA (url, sizeof (url),"https://veracrypt.codeplex.com/wikipage?title=Favorite%20Volumes");
+		StringCbCopyW (page, sizeof (page),L"Favorite%20Volumes.html");
 	}
 	else if (strcmp(dest, "hiddenvolprotection") == 0)
 	{
-		StringCbCopyA (url, sizeof (url),"https://veracrypt.codeplex.com/wikipage?title=Protection%20of%20Hidden%20Volumes");
+		StringCbCopyW (page, sizeof (page),L"Protection%20of%20Hidden%20Volumes.html");
 	}
 	else if (strcmp(dest, "faq") == 0)
 	{
-		StringCbCopyA (url, sizeof (url),"https://veracrypt.codeplex.com/wikipage?title=FAQ");
+		StringCbCopyW (page, sizeof (page),L"FAQ.html");
 	}
 	else if (strcmp(dest, "downloads") == 0)
 	{
-		StringCbCopyA (url, sizeof (url),"https://veracrypt.codeplex.com/wikipage?title=Downloads");
+		StringCbCopyW (page, sizeof (page),L"Downloads.html");
 	}
 	else if (strcmp(dest, "news") == 0)
 	{
-		StringCbCopyA (url, sizeof (url),"https://veracrypt.codeplex.com/wikipage?title=News");
+		StringCbCopyW (page, sizeof (page),L"News.html");
 	}
 	else if (strcmp(dest, "contact") == 0)
 	{
-		StringCbCopyA (url, sizeof (url),"https://veracrypt.codeplex.com/wikipage?title=Contact");
+		StringCbCopyW (page, sizeof (page),L"Contact.html");
 	}
 	else if (strcmp(dest, "pim") == 0)
 	{
-		StringCbCopyA (url, sizeof (url),"https://veracrypt.codeplex.com/wikipage?title=Personal%20Iterations%20Multiplier%20%28PIM%29");
+		StringCbCopyW (page, sizeof (page),L"Personal%20Iterations%20Multiplier%20%28PIM%29.html");
 	}
 	else
 	{
-		StringCbCopyA (url, sizeof (url),TC_APPLINK);
+		StringCbCopyW (url, sizeof (url),TC_APPLINK);
+		buildUrl = FALSE;
 	}
-	ShellExecuteA (NULL, "open", url, NULL, NULL, SW_SHOWNORMAL);
+	
+	if (buildUrl)
+	{
+		StringCbPrintfW (url, sizeof (url), L"file:///%sdocs/html/en/%s", installDir, page);
+		CorrectURL (url);
+	}
+
+	r = (int) ShellExecuteW (NULL, L"open", url, NULL, NULL, SW_SHOWNORMAL);
+
+	if (((r == ERROR_FILE_NOT_FOUND) || (r == ERROR_PATH_NOT_FOUND)) && buildUrl)
+	{
+		// fallbacl to online resources
+		StringCbPrintfW (url, sizeof (url), L"https://www.veracrypt.fr/en/%s", page);
+		ShellExecuteW (NULL, L"open", url, NULL, NULL, SW_SHOWNORMAL);
+	}			
 
 	Sleep (200);
 	NormalCursor ();
@@ -10429,7 +10623,7 @@ int OpenVolume (OpenVolumeContext *context, const wchar_t *volumePath, Password 
 	char buffer[TC_VOLUME_HEADER_EFFECTIVE_SIZE];
 	LARGE_INTEGER headerOffset;
 	DWORD dwResult;
-	DISK_GEOMETRY deviceGeometry;
+	DISK_GEOMETRY_EX deviceGeometry;
 
 	context->VolumeIsOpen = FALSE;
 	context->CryptoInfo = NULL;
@@ -10497,15 +10691,15 @@ int OpenVolume (OpenVolumeContext *context, const wchar_t *volumePath, Password 
 		}
 		else
 		{
-			DISK_GEOMETRY driveInfo;
+			DISK_GEOMETRY_EX driveInfo;
 
-			if (!DeviceIoControl (context->HostFileHandle, IOCTL_DISK_GET_DRIVE_GEOMETRY, NULL, 0, &driveInfo, sizeof (driveInfo), &dwResult, NULL))
+			if (!DeviceIoControl (context->HostFileHandle, IOCTL_DISK_GET_DRIVE_GEOMETRY_EX, NULL, 0, &driveInfo, sizeof (driveInfo), &dwResult, NULL))
 			{
 				status = ERR_OS_ERROR;
 				goto error;
 			}
 
-			context->HostSize = driveInfo.Cylinders.QuadPart * driveInfo.BytesPerSector * driveInfo.SectorsPerTrack * driveInfo.TracksPerCylinder;
+			context->HostSize = driveInfo.DiskSize.QuadPart;
 		}
 
 		if (context->HostSize == 0)
@@ -10693,10 +10887,10 @@ BOOL IsPagingFileActive (BOOL checkNonWindowsPartitionsOnly)
 		if (handle == INVALID_HANDLE_VALUE)
 			continue;
 
-		DISK_GEOMETRY driveInfo;
+		DISK_GEOMETRY_EX driveInfo;
 		DWORD dwResult;
 
-		if (!DeviceIoControl (handle, IOCTL_DISK_GET_DRIVE_GEOMETRY, NULL, 0, &driveInfo, sizeof (driveInfo), &dwResult, NULL))
+		if (!DeviceIoControl (handle, IOCTL_DISK_GET_DRIVE_GEOMETRY_EX, NULL, 0, &driveInfo, sizeof (driveInfo), &dwResult, NULL))
 		{
 			CloseHandle (handle);
 			continue;
@@ -11293,8 +11487,6 @@ BOOL InitSecurityTokenLibrary (HWND hwndDlg)
 	return TRUE;
 }
 
-#endif // !SETUP
-
 std::vector <HostDevice> GetAvailableHostDevices (bool noDeviceProperties, bool singleList, bool noFloppy, bool detectUnencryptedFilesystems)
 {
 	vector <HostDevice> devices;
@@ -11331,14 +11523,13 @@ std::vector <HostDevice> GetAvailableHostDevices (bool noDeviceProperties, bool 
 			}
 			else
 			{
-				// retrieve size using DISK_GEOMETRY
-				DISK_GEOMETRY deviceGeometry = {0};
+				// retrieve size using DISK_GEOMETRY_EX
+				DISK_GEOMETRY_EX deviceGeometry = {0};
 				if (	GetDriveGeometry (devPath, &deviceGeometry)
 						||	((partNumber == 0) && GetPhysicalDriveGeometry (devNumber, &deviceGeometry))
 					)
 				{
-					device.Size = deviceGeometry.Cylinders.QuadPart * (LONGLONG) deviceGeometry.BytesPerSector
-						* (LONGLONG) deviceGeometry.SectorsPerTrack * (LONGLONG) deviceGeometry.TracksPerCylinder;
+					device.Size = (uint64) deviceGeometry.DiskSize.QuadPart;
 				}
 			}
 
@@ -11346,7 +11537,7 @@ std::vector <HostDevice> GetAvailableHostDevices (bool noDeviceProperties, bool 
 
 			if (!noDeviceProperties)
 			{
-				DISK_GEOMETRY geometry;
+				DISK_GEOMETRY_EX geometry;
 
 				int driveNumber = GetDiskDeviceDriveLetter ((wchar_t *) devPathStr.c_str());
 
@@ -11364,7 +11555,7 @@ std::vector <HostDevice> GetAvailableHostDevices (bool noDeviceProperties, bool 
 				}
 
 				if (partNumber == 0 && GetDriveGeometry (devPath, &geometry))
-					device.Removable = (geometry.MediaType == RemovableMedia);
+					device.Removable = (geometry.Geometry.MediaType == RemovableMedia);
 			}
 
 			if (partNumber == 0)
@@ -11495,6 +11686,8 @@ wstring FindDeviceByVolumeID (const BYTE volumeID [VOLUME_ID_SIZE])
 
 	return L"";
 }
+
+#endif // !SETUP
 
 BOOL FileHasReadOnlyAttribute (const wchar_t *path)
 {
@@ -12102,6 +12295,8 @@ BOOL IsRepeatedByteArray (byte value, const byte* buffer, size_t bufferSize)
 		return FALSE;
 }
 
+#ifndef SETUP
+
 BOOL TranslateVolumeID (HWND hwndDlg, wchar_t* pathValue, size_t cchPathValue)
 {
 	BOOL bRet = TRUE;
@@ -12137,6 +12332,8 @@ BOOL TranslateVolumeID (HWND hwndDlg, wchar_t* pathValue, size_t cchPathValue)
 
 	return bRet;
 }
+
+#endif
 
 BOOL CopyTextToClipboard (LPCWSTR txtValue)
 {

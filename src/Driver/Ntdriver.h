@@ -63,7 +63,9 @@ typedef struct EXTENSION
 
 	uint32 HostBytesPerSector;
 	uint32 HostBytesPerPhysicalSector;
-	ULONG BytesOffsetForSectorAlignment;
+	ULONG HostMaximumTransferLength;
+	ULONG HostMaximumPhysicalPages;
+	ULONG HostAlignmentMask;
 
 	KEVENT keVolumeEvent;		/* Event structure used when setting up a device */
 
