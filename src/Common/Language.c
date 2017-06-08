@@ -103,7 +103,7 @@ static char *MapNextLanguageFile ()
 		if (t == NULL) return NULL;
 
 		*t = 0;
-		StringCbCatW (f, sizeof(f), L"\\Language*.xml");
+		StringCbCatW (f, sizeof(f), L"\\Languages\\Language*.xml");
 
 		LanguageFileFindHandle = FindFirstFileW (f, &find);
 	}
@@ -130,6 +130,7 @@ static char *MapNextLanguageFile ()
 	}
 
 	t[1] = 0;
+	StringCbCatW (f, sizeof(f), L"Languages\\");
 	StringCbCatW (f, sizeof(f),find.cFileName);
 
 	file = CreateFileW (f, GENERIC_READ, 0, NULL, OPEN_EXISTING, 0, NULL);
@@ -539,7 +540,7 @@ BOOL CALLBACK LanguageDlgProc (HWND hwndDlg, UINT msg, WPARAM wParam, LPARAM lPa
 			else
 				tmpstr[0] = 0;
 
-			Applink ("localizations", TRUE, tmpstr);
+			Applink ("localizations");
 
 			return 1;
 		}

@@ -51,6 +51,8 @@
 
 #include <Strsafe.h>
 
+#import <msxml6.dll>
+
 #include <wtsapi32.h>
 
 typedef BOOL (WINAPI *WTSREGISTERSESSIONNOTIFICATION)(HWND, DWORD);
@@ -61,7 +63,8 @@ using namespace VeraCrypt;
 enum timer_ids
 {
 	TIMER_ID_MAIN = 0xff,
-	TIMER_ID_KEYB_LAYOUT_GUARD
+	TIMER_ID_KEYB_LAYOUT_GUARD,
+	TIMER_ID_UPDATE_DEVICE_LIST
 };
 
 enum hidden_os_read_only_notif_mode
@@ -73,6 +76,7 @@ enum hidden_os_read_only_notif_mode
 
 #define TIMER_INTERVAL_MAIN					500
 #define TIMER_INTERVAL_KEYB_LAYOUT_GUARD	10
+#define TIMER_INTERVAL_UPDATE_DEVICE_LIST	1000
 
 BootEncryption			*BootEncObj = NULL;
 BootEncryptionStatus	BootEncStatus;
@@ -213,6 +217,125 @@ static void UnregisterWtsNotification(HWND hWnd)
 	}
 }
 
+static std::vector<MSXML2::IXMLDOMNodePtr> GetReadChildNodes (MSXML2::IXMLDOMNodeListPtr childs)
+{
+	std::vector<MSXML2::IXMLDOMNodePtr> list;	
+	if (childs && childs->Getlength())
+	{
+		for (long i = 0; i < childs->Getlength(); i++)
+		{
+			MSXML2::IXMLDOMNodePtr node = childs->Getitem(i);
+			if (node)
+			{
+				//skip comments
+				if (node->GetnodeType() == NODE_COMMENT)
+					continue;
+				// skip root xml node
+				if (node->GetbaseName().GetBSTR() && (0 == strcmp ("xml", (const char*) node->GetbaseName())))
+					continue;
+
+				list.push_back (node);
+			}
+		}
+	}
+
+	return list;
+}
+
+static bool validateDcsPropXml(const char* xmlData)
+{
+	bool bValid = false;	
+	HRESULT hr = CoInitialize(NULL);
+	if(FAILED(hr))
+		return false;
+	else
+	{
+		MSXML2::IXMLDOMDocumentPtr pXMLDom;
+		hr= pXMLDom.CreateInstance(__uuidof(MSXML2::DOMDocument60), NULL, CLSCTX_INPROC_SERVER);
+		if (SUCCEEDED(hr)) 
+		{
+			try
+			{
+				pXMLDom->async = VARIANT_FALSE;
+				pXMLDom->validateOnParse = VARIANT_FALSE;
+				pXMLDom->resolveExternals = VARIANT_FALSE;
+
+				if(pXMLDom->loadXML(xmlData) == VARIANT_TRUE && pXMLDom->hasChildNodes())
+				{
+					MSXML2::IXMLDOMNodePtr veracryptNode, configurationNode, configNode;
+					std::vector<MSXML2::IXMLDOMNodePtr> nodes = GetReadChildNodes (pXMLDom->GetchildNodes());
+					size_t nodesCount = nodes.size();
+					if (nodesCount == 1 
+						&& ((veracryptNode = nodes[0])->GetnodeType() == NODE_ELEMENT)
+						&& veracryptNode->GetnodeName().GetBSTR()
+						&& (0 == strcmp ((const char*) veracryptNode->GetnodeName(), "VeraCrypt")) 
+						&& veracryptNode->hasChildNodes()
+						
+						)
+					{
+						nodes = GetReadChildNodes (veracryptNode->GetchildNodes());
+						nodesCount = nodes.size();
+						if ((nodesCount == 1)
+							&& ((configurationNode = nodes[0])->GetnodeType() == NODE_ELEMENT)
+							&& configurationNode->GetnodeName().GetBSTR()
+							&&  (0 == strcmp ((const char*) configurationNode->GetnodeName(), "configuration"))
+							&&  (configurationNode->hasChildNodes())
+							)
+						{
+							nodes = GetReadChildNodes (configurationNode->GetchildNodes());
+							nodesCount = nodes.size();
+
+							if (nodesCount > 1)
+							{
+								bValid = true;
+								for (size_t i = 0; bValid && (i < nodesCount); i++)
+								{
+									configNode = nodes[i];
+									if (configNode->GetnodeType() == NODE_COMMENT)
+										continue;									
+									else if (	(configNode->GetnodeType() == NODE_ELEMENT)
+										&&	(configNode->GetnodeName().GetBSTR())
+										&& (0 == strcmp ((const char*) configNode->GetnodeName(), "config"))	
+										)
+									{
+										nodes = GetReadChildNodes (configNode->GetchildNodes());
+										nodesCount = nodes.size();
+										if ((nodesCount == 0 || (nodesCount == 1 && nodes[0]->GetnodeType() == NODE_TEXT)) 
+											&& configNode->Getattributes() 
+											&& (configNode->Getattributes()->Getlength() == 1)
+											&& (configNode->Getattributes()->Getitem(0))
+											)
+										{
+											std::string val;
+											bstr_t bstr = configNode->Getattributes()->Getitem(0)->GetnodeName ();
+											if (bstr.GetBSTR())
+												val = (const char*) bstr;
+											if (val != "key")
+												bValid = false;
+										}
+										else
+											bValid = false;
+									}
+									else
+										bValid = false;
+								}
+							}
+						}
+					}
+				}
+			}
+			catch(_com_error errorObject)
+			{
+				bValid = false;
+			}
+		}
+	}
+
+	CoUninitialize();
+	return bValid;
+}
+
+
 static void localcleanup (void)
 {
 	// Wipe command line
@@ -290,6 +413,7 @@ void EndMainDlg (HWND hwndDlg)
 	else
 	{
 		KillTimer (hwndDlg, TIMER_ID_MAIN);
+		KillTimer (hwndDlg, TIMER_ID_UPDATE_DEVICE_LIST);
 		TaskBarIconRemove (hwndDlg);
 		UnregisterWtsNotification(hwndDlg);
 		EndDialog (hwndDlg, 0);
@@ -1482,6 +1606,7 @@ void LoadDriveLetters (HWND hwndDlg, HWND hTree, int drive)
 	if (bResult == FALSE)
 	{
 		KillTimer (MainDlg, TIMER_ID_MAIN);
+		KillTimer (hwndDlg, TIMER_ID_UPDATE_DEVICE_LIST);
 		handleWin32Error (hTree, SRC_POS);
 		AbortProcessSilent();
 	}
@@ -3487,7 +3612,7 @@ BOOL CALLBACK MountOptionsDlgProc (HWND hwndDlg, UINT msg, WPARAM wParam, LPARAM
 
 		if (lw == IDC_LINK_HIDVOL_PROTECTION_INFO)
 		{
-			Applink ("hiddenvolprotection", TRUE, "");
+			Applink ("hiddenvolprotection");
 		}
 
 		if (lw == IDCANCEL)
@@ -4355,8 +4480,14 @@ BOOL CALLBACK TravelerDlgProc (HWND hwndDlg, UINT msg, WPARAM wParam, LPARAM lPa
 			if (strcmp (GetPreferredLangId (), "en") != 0)
 			{
 				// Language pack
-				StringCbPrintfW (srcPath, sizeof(srcPath), L"%s\\Language.%hs.xml", appDir, GetPreferredLangId ());
-				StringCbPrintfW (dstPath, sizeof(dstPath), L"%s\\VeraCrypt\\Language.%hs.xml", dstDir, GetPreferredLangId ());
+				StringCbPrintfW (dstPath, sizeof(dstPath), L"%s\\VeraCrypt\\Languages", dstDir);
+				if (!CreateDirectoryW (dstPath, NULL))
+				{
+					handleWin32Error (hwndDlg, SRC_POS);
+					goto stop;
+				}
+				StringCbPrintfW (srcPath, sizeof(srcPath), L"%s\\Languages\\Language.%hs.xml", appDir, GetPreferredLangId ());
+				StringCbPrintfW (dstPath, sizeof(dstPath), L"%s\\VeraCrypt\\Languages\\Language.%hs.xml", dstDir, GetPreferredLangId ());
 				TCCopyFile (srcPath, dstPath);
 			}
 
@@ -4978,11 +5109,14 @@ retry:
 	DeviceIoControl (hDriver, TC_IOCTL_GET_MOUNTED_VOLUMES, &mountList, sizeof (mountList), &mountList, sizeof (mountList), &dwResult, NULL);
 
 	// remove any custom label from registry
-	for (i = 0; i < 26; i++)
+	if (prevMountList.ulMountedDrives)
 	{
-		if ((prevMountList.ulMountedDrives & (1 << i)) && (!(mountList.ulMountedDrives & (1 << i))) && wcslen (prevMountList.wszLabel[i]))
+		for (i = 0; i < 26; i++)
 		{
-			UpdateDriveCustomLabel (i, prevMountList.wszLabel[i], FALSE);
+			if ((prevMountList.ulMountedDrives & (1 << i)) && (!(mountList.ulMountedDrives & (1 << i))) && wcslen (prevMountList.wszLabel[i]))
+			{
+				UpdateDriveCustomLabel (i, prevMountList.wszLabel[i], FALSE);
+			}
 		}
 	}
 
@@ -5013,12 +5147,15 @@ retry:
 				// Undo SHCNE_DRIVEREMOVED
 				DeviceIoControl (hDriver, TC_IOCTL_GET_MOUNTED_VOLUMES, NULL, 0, &mountList, sizeof (mountList), &dwResult, NULL);
 
-				for (i = 0; i < 26; i++)
+				if (mountList.ulMountedDrives)
 				{
-					if (mountList.ulMountedDrives & (1 << i))
+					for (i = 0; i < 26; i++)
 					{
-						wchar_t root[] = { (wchar_t) i + L'A', L':', L'\\', 0 };
-						SHChangeNotify (SHCNE_DRIVEADD, SHCNF_PATH, root, NULL);
+						if (mountList.ulMountedDrives & (1 << i))
+						{
+							wchar_t root[] = { (wchar_t) i + L'A', L':', L'\\', 0 };
+							SHChangeNotify (SHCNE_DRIVEADD, SHCNF_PATH, root, NULL);
+						}
 					}
 				}
 			}
@@ -6799,6 +6936,7 @@ BOOL CALLBACK MainDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 
 			GetMountList (&LastKnownMountList);
 			SetTimer (hwndDlg, TIMER_ID_MAIN, TIMER_INTERVAL_MAIN, NULL);
+			SetTimer (hwndDlg, TIMER_ID_UPDATE_DEVICE_LIST, TIMER_INTERVAL_UPDATE_DEVICE_LIST, NULL);
 
 			taskBarCreatedMsg = RegisterWindowMessage (L"TaskbarCreated");
 
@@ -6955,197 +7093,204 @@ BOOL CALLBACK MainDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 
 	case WM_TIMER:
 		{
-			// Check mount list and update GUI if needed
-			CheckMountList (hwndDlg, FALSE);
-
-			// Cache status
-			if (IsPasswordCacheEmpty() == IsWindowEnabled (GetDlgItem (hwndDlg, IDC_WIPE_CACHE)))
-				EnableWindow (GetDlgItem (hwndDlg, IDC_WIPE_CACHE), !IsPasswordCacheEmpty());
-
-			// Check driver warning flags
-			DWORD bytesOut;
-			GetWarningFlagsRequest warnings;
-			if (DeviceIoControl (hDriver, TC_IOCTL_GET_WARNING_FLAGS, NULL, 0, &warnings, sizeof (warnings), &bytesOut, NULL))
+			if (wParam == TIMER_ID_UPDATE_DEVICE_LIST)
 			{
-				if (warnings.SystemFavoriteVolumeDirty)
-					WarningTopMost ("SYS_FAVORITE_VOLUME_DIRTY", hwndDlg);
-
-				if (warnings.PagingFileCreationPrevented)
-					WarningTopMost ("PAGING_FILE_CREATION_PREVENTED", hwndDlg);
+				UpdateMountableHostDeviceList ();
 			}
-
-			if (TaskBarIconMutex != NULL)
+			else
 			{
+				// Check mount list and update GUI if needed
+				CheckMountList (hwndDlg, FALSE);
 
-				// Idle auto-dismount
-				if (MaxVolumeIdleTime > 0)
-					DismountIdleVolumes ();
+				// Cache status
+				if (IsPasswordCacheEmpty() == IsWindowEnabled (GetDlgItem (hwndDlg, IDC_WIPE_CACHE)))
+					EnableWindow (GetDlgItem (hwndDlg, IDC_WIPE_CACHE), !IsPasswordCacheEmpty());
 
-				// Screen saver auto-dismount
-				if (bDismountOnScreenSaver)
+				// Check driver warning flags
+				DWORD bytesOut;
+				GetWarningFlagsRequest warnings;
+				if (DeviceIoControl (hDriver, TC_IOCTL_GET_WARNING_FLAGS, NULL, 0, &warnings, sizeof (warnings), &bytesOut, NULL))
 				{
-					static BOOL previousState = FALSE;
-					BOOL running = FALSE;
-					SystemParametersInfo (SPI_GETSCREENSAVERRUNNING, 0, &running, 0);
+					if (warnings.SystemFavoriteVolumeDirty)
+						WarningTopMost ("SYS_FAVORITE_VOLUME_DIRTY", hwndDlg);
 
-					if (running && !previousState)
-					{
-						DWORD dwResult;
-						previousState = TRUE;
-
-						if (bWipeCacheOnAutoDismount)
-						{
-							DeviceIoControl (hDriver, TC_IOCTL_WIPE_PASSWORD_CACHE, NULL, 0, NULL, 0, &dwResult, NULL);
-							SecurityToken::CloseAllSessions();
-						}
-
-						DismountAll (hwndDlg, bForceAutoDismount, FALSE, UNMOUNT_MAX_AUTO_RETRIES, UNMOUNT_AUTO_RETRY_DELAY);
-					}
-					else
-					{
-						previousState = running;
-					}
+					if (warnings.PagingFileCreationPrevented)
+						WarningTopMost ("PAGING_FILE_CREATION_PREVENTED", hwndDlg);
 				}
 
-				// Auto-mount favorite volumes on arrival
-#if TIMER_INTERVAL_MAIN != 500
-#error TIMER_INTERVAL_MAIN != 500
-#endif
-				static int favoritesAutoMountTimerDivisor = 0;
-				if ((++favoritesAutoMountTimerDivisor & 1) && !FavoritesOnArrivalMountRequired.empty())
+				if (TaskBarIconMutex != NULL)
 				{
-					static bool reentry = false;
-					if (reentry)
-						break;
 
-					reentry = true;
+					// Idle auto-dismount
+					if (MaxVolumeIdleTime > 0)
+						DismountIdleVolumes ();
 
-					foreach (FavoriteVolume favorite, FavoritesOnArrivalMountRequired)
+					// Screen saver auto-dismount
+					if (bDismountOnScreenSaver)
 					{
-						if (favorite.UseVolumeID)
-						{
-							if (IsMountedVolumeID (favorite.VolumeID))
-								continue;
+						static BOOL previousState = FALSE;
+						BOOL running = FALSE;
+						SystemParametersInfo (SPI_GETSCREENSAVERRUNNING, 0, &running, 0);
 
-							std::wstring volDevPath = FindDeviceByVolumeID (favorite.VolumeID);
-							if (volDevPath.length() > 0)
+						if (running && !previousState)
+						{
+							DWORD dwResult;
+							previousState = TRUE;
+
+							if (bWipeCacheOnAutoDismount)
 							{
-								favorite.Path = volDevPath;
+								DeviceIoControl (hDriver, TC_IOCTL_WIPE_PASSWORD_CACHE, NULL, 0, NULL, 0, &dwResult, NULL);
+								SecurityToken::CloseAllSessions();
+							}
+
+							DismountAll (hwndDlg, bForceAutoDismount, FALSE, UNMOUNT_MAX_AUTO_RETRIES, UNMOUNT_AUTO_RETRY_DELAY);
+						}
+						else
+						{
+							previousState = running;
+						}
+					}
+
+					// Auto-mount favorite volumes on arrival
+	#if TIMER_INTERVAL_MAIN != 500
+	#error TIMER_INTERVAL_MAIN != 500
+	#endif
+					static int favoritesAutoMountTimerDivisor = 0;
+					if ((++favoritesAutoMountTimerDivisor & 1) && !FavoritesOnArrivalMountRequired.empty())
+					{
+						static bool reentry = false;
+						if (reentry)
+							break;
+
+						reentry = true;
+
+						foreach (FavoriteVolume favorite, FavoritesOnArrivalMountRequired)
+						{
+							if (favorite.UseVolumeID)
+							{
+								if (IsMountedVolumeID (favorite.VolumeID))
+									continue;
+
+								std::wstring volDevPath = FindDeviceByVolumeID (favorite.VolumeID);
+								if (volDevPath.length() > 0)
+								{
+									favorite.Path = volDevPath;
+									favorite.DisconnectedDevice = false;
+								}
+								else
+									continue;
+							}
+							else if (!favorite.VolumePathId.empty())
+							{
+								if (IsMountedVolume (favorite.Path.c_str()))
+									continue;
+
+								wchar_t volDevPath[TC_MAX_PATH];
+								if (QueryDosDevice (favorite.VolumePathId.substr (4, favorite.VolumePathId.size() - 5).c_str(), volDevPath, TC_MAX_PATH) == 0)
+									continue;
+
 								favorite.DisconnectedDevice = false;
 							}
-							else
-								continue;
-						}
-						else if (!favorite.VolumePathId.empty())
-						{
+							else if (favorite.Path.find (L"\\\\?\\Volume{") == 0)
+							{
+								wstring resolvedPath = VolumeGuidPathToDevicePath (favorite.Path);
+								if (resolvedPath.empty())
+									continue;
+
+								favorite.DisconnectedDevice = false;
+								favorite.VolumePathId = favorite.Path;
+								favorite.Path = resolvedPath;
+							}
+
 							if (IsMountedVolume (favorite.Path.c_str()))
 								continue;
 
+							if (!IsVolumeDeviceHosted (favorite.Path.c_str()))
+							{
+								if (!FileExists (favorite.Path.c_str()))
+									continue;
+							}
+							else if (favorite.VolumePathId.empty())
+								continue;
+
+							bool mountedAndNotDisconnected = false;
+							foreach (FavoriteVolume mountedFavorite, FavoritesMountedOnArrivalStillConnected)
+							{
+								if (favorite.Path == mountedFavorite.Path)
+								{
+									mountedAndNotDisconnected = true;
+									break;
+								}
+							}
+
+							if (!mountedAndNotDisconnected)
+							{
+								FavoriteMountOnArrivalInProgress = TRUE;
+								MountFavoriteVolumes (hwndDlg, FALSE, FALSE, FALSE, favorite);
+								FavoriteMountOnArrivalInProgress = FALSE;
+
+								FavoritesMountedOnArrivalStillConnected.push_back (favorite);
+							}
+						}
+
+						bool deleted;
+						for (list <FavoriteVolume>::iterator favorite = FavoritesMountedOnArrivalStillConnected.begin();
+							favorite != FavoritesMountedOnArrivalStillConnected.end();
+							deleted ? favorite : ++favorite)
+						{
+							deleted = false;
+
+							if (IsMountedVolume (favorite->Path.c_str()))
+								continue;
+
+							if (!IsVolumeDeviceHosted (favorite->Path.c_str()))
+							{
+								if (FileExists (favorite->Path.c_str()))
+									continue;
+							}
+
 							wchar_t volDevPath[TC_MAX_PATH];
-							if (QueryDosDevice (favorite.VolumePathId.substr (4, favorite.VolumePathId.size() - 5).c_str(), volDevPath, TC_MAX_PATH) == 0)
-								continue;
-
-							favorite.DisconnectedDevice = false;
-						}
-						else if (favorite.Path.find (L"\\\\?\\Volume{") == 0)
-						{
-							wstring resolvedPath = VolumeGuidPathToDevicePath (favorite.Path);
-							if (resolvedPath.empty())
-								continue;
-
-							favorite.DisconnectedDevice = false;
-							favorite.VolumePathId = favorite.Path;
-							favorite.Path = resolvedPath;
-						}
-
-						if (IsMountedVolume (favorite.Path.c_str()))
-							continue;
-
-						if (!IsVolumeDeviceHosted (favorite.Path.c_str()))
-						{
-							if (!FileExists (favorite.Path.c_str()))
-								continue;
-						}
-						else if (favorite.VolumePathId.empty())
-							continue;
-
-						bool mountedAndNotDisconnected = false;
-						foreach (FavoriteVolume mountedFavorite, FavoritesMountedOnArrivalStillConnected)
-						{
-							if (favorite.Path == mountedFavorite.Path)
+							if (favorite->VolumePathId.size() > 5
+								&& QueryDosDevice (favorite->VolumePathId.substr (4, favorite->VolumePathId.size() - 5).c_str(), volDevPath, TC_MAX_PATH) != 0)
 							{
-								mountedAndNotDisconnected = true;
-								break;
-							}
-						}
-
-						if (!mountedAndNotDisconnected)
-						{
-							FavoriteMountOnArrivalInProgress = TRUE;
-							MountFavoriteVolumes (hwndDlg, FALSE, FALSE, FALSE, favorite);
-							FavoriteMountOnArrivalInProgress = FALSE;
-
-							FavoritesMountedOnArrivalStillConnected.push_back (favorite);
-						}
-					}
-
-					bool deleted;
-					for (list <FavoriteVolume>::iterator favorite = FavoritesMountedOnArrivalStillConnected.begin();
-						favorite != FavoritesMountedOnArrivalStillConnected.end();
-						deleted ? favorite : ++favorite)
-					{
-						deleted = false;
-
-						if (IsMountedVolume (favorite->Path.c_str()))
-							continue;
-
-						if (!IsVolumeDeviceHosted (favorite->Path.c_str()))
-						{
-							if (FileExists (favorite->Path.c_str()))
 								continue;
-						}
-
-						wchar_t volDevPath[TC_MAX_PATH];
-						if (favorite->VolumePathId.size() > 5
-							&& QueryDosDevice (favorite->VolumePathId.substr (4, favorite->VolumePathId.size() - 5).c_str(), volDevPath, TC_MAX_PATH) != 0)
-						{
-							continue;
-						}
-
-						// set DisconnectedDevice field on FavoritesOnArrivalMountRequired element
-						foreach (FavoriteVolume onArrivalFavorite, FavoritesOnArrivalMountRequired)
-						{
-							if (onArrivalFavorite.Path == favorite->Path)
-							{
-								onArrivalFavorite.DisconnectedDevice = true;
-								break;
 							}
+
+							// set DisconnectedDevice field on FavoritesOnArrivalMountRequired element
+							foreach (FavoriteVolume onArrivalFavorite, FavoritesOnArrivalMountRequired)
+							{
+								if (onArrivalFavorite.Path == favorite->Path)
+								{
+									onArrivalFavorite.DisconnectedDevice = true;
+									break;
+								}
+							}
+
+							favorite = FavoritesMountedOnArrivalStillConnected.erase (favorite);
+							deleted = true;
 						}
 
-						favorite = FavoritesMountedOnArrivalStillConnected.erase (favorite);
-						deleted = true;
+						reentry = false;
 					}
+				}
 
-					reentry = false;
+				// Exit background process in non-install mode or if no volume mounted
+				// and no other instance active
+				if (LastKnownMountList.ulMountedDrives == 0
+					&& MainWindowHidden
+	#ifndef _DEBUG
+					&& (bCloseBkgTaskWhenNoVolumes || IsNonInstallMode ())
+					&& !SysEncDeviceActive (TRUE)
+	#endif
+					&& GetDriverRefCount () < 2)
+				{
+					TaskBarIconRemove (hwndDlg);
+					UnregisterWtsNotification(hwndDlg);
+					EndMainDlg (hwndDlg);
 				}
 			}
-
-			// Exit background process in non-install mode or if no volume mounted
-			// and no other instance active
-			if (LastKnownMountList.ulMountedDrives == 0
-				&& MainWindowHidden
-#ifndef _DEBUG
-				&& (bCloseBkgTaskWhenNoVolumes || IsNonInstallMode ())
-				&& !SysEncDeviceActive (TRUE)
-#endif
-				&& GetDriverRefCount () < 2)
-			{
-				TaskBarIconRemove (hwndDlg);
-				UnregisterWtsNotification(hwndDlg);
-				EndMainDlg (hwndDlg);
-			}
-		}
-		return 1;
+			return 1;
+		}		
 
 	case TC_APPMSG_TASKBAR_ICON:
 		{
@@ -7253,7 +7398,7 @@ BOOL CALLBACK MainDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 					}
 					else if (sel == IDM_HOMEPAGE_SYSTRAY)
 					{
-						Applink ("home", TRUE, "");
+						Applink ("home");
 					}
 					else if (sel == IDCANCEL)
 					{
@@ -7316,7 +7461,7 @@ BOOL CALLBACK MainDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 
 				for (i = 0; i < 26; i++)
 				{
-					if ((vol->dbcv_unitmask & (1 << i)) && !(GetUsedLogicalDrives() & (1 << i)))
+					if (LastKnownMountList.ulMountedDrives && (vol->dbcv_unitmask & (1 << i)) && !(GetUsedLogicalDrives() & (1 << i)))
 					{
 						for (m = 0; m < 26; m++)
 						{
@@ -7352,7 +7497,7 @@ BOOL CALLBACK MainDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 					{
 						OPEN_TEST_STRUCT ots = {0};
 
-						if (!OpenDevice (vol, &ots, FALSE, FALSE, NULL))
+						if (!OpenDevice (vol, &ots, FALSE, FALSE))
 						{
 							UnmountVolume (hwndDlg, m, TRUE);
 							WarningBalloon ("HOST_DEVICE_REMOVAL_DISMOUNT_WARN_TITLE", "HOST_DEVICE_REMOVAL_DISMOUNT_WARN", hwndDlg);
@@ -7880,7 +8025,7 @@ BOOL CALLBACK MainDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 
 		if (lw == IDM_DONATE)
 		{
-			Applink ("donate", TRUE, "");
+			Applink ("donate");
 			return 1;
 		}
 
@@ -7892,17 +8037,17 @@ BOOL CALLBACK MainDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 
 		if (lw == IDM_WEBSITE)
 		{
-			Applink ("website", TRUE, "");
+			Applink ("website");
 			return 1;
 		}
 		else if (lw == IDM_HOMEPAGE)
 		{
-			Applink ("homepage", TRUE, "");
+			Applink ("homepage");
 			return 1;
 		}
 		else if (lw == IDM_ONLINE_TUTORIAL)
 		{
-			Applink ("tutorial", TRUE, "");
+			Applink ("tutorial");
 			return 1;
 		}
 		else if (lw == IDM_ONLINE_HELP)
@@ -7912,27 +8057,27 @@ BOOL CALLBACK MainDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 		}
 		else if (lw == IDM_FAQ)
 		{
-			Applink ("faq", TRUE, "");
+			Applink ("faq");
 			return 1;
 		}
 		else if (lw == IDM_TC_DOWNLOADS)
 		{
-			Applink ("downloads", TRUE, "");
+			Applink ("downloads");
 			return 1;
 		}
 		else if (lw == IDM_NEWS)
 		{
-			Applink ("news", TRUE, "");
+			Applink ("news");
 			return 1;
 		}
 		else if (lw == IDM_VERSION_HISTORY)
 		{
-			Applink ("history", TRUE, "");
+			Applink ("history");
 			return 1;
 		}
 		else if (lw == IDM_CONTACT)
 		{
-			Applink ("contact", FALSE, "");
+			Applink ("contact");
 			return 1;
 		}
 
@@ -10634,11 +10779,11 @@ static BOOL CALLBACK PerformanceSettingsDlgProc (HWND hwndDlg, UINT msg, WPARAM 
 			return 1;
 
 		case IDC_MORE_INFO_ON_HW_ACCELERATION:
-			Applink ("hwacceleration", TRUE, "");
+			Applink ("hwacceleration");
 			return 1;
 
 		case IDC_MORE_INFO_ON_THREAD_BASED_PARALLELIZATION:
-			Applink ("parallelization", TRUE, "");
+			Applink ("parallelization");
 			return 1;
 		}
 
@@ -10875,7 +11020,6 @@ void SecurityTokenPreferencesDialog (HWND hwndDlg)
 	DialogBoxParamW (hInst, MAKEINTRESOURCEW (IDD_TOKEN_PREFERENCES), hwndDlg, (DLGPROC) SecurityTokenPreferencesDlgProc, 0);
 }
 
-
 static BOOL CALLBACK BootLoaderPreferencesDlgProc (HWND hwndDlg, UINT msg, WPARAM wParam, LPARAM lParam)
 {
 	WORD lw = LOWORD (wParam);
@@ -10895,7 +11039,6 @@ static BOOL CALLBACK BootLoaderPreferencesDlgProc (HWND hwndDlg, UINT msg, WPARA
 			try
 			{
 				LocalizeDialog (hwndDlg, "IDD_SYSENC_SETTINGS");
-
 				uint32 driverConfig = ReadDriverConfigurationFlags();
 				byte userConfig;
 				string customUserMessage;
@@ -10948,6 +11091,83 @@ static BOOL CALLBACK BootLoaderPreferencesDlgProc (HWND hwndDlg, UINT msg, WPARA
 		case IDCANCEL:
 			EndDialog (hwndDlg, lw);
 			return 1;
+		case IDC_SHOW_PLATFORMINFO:
+			{
+				try
+				{
+					std::string platforminfo;
+					ByteArray fileContent;
+					DWORD sz, offset;
+					std::wstring path;
+					GetVolumeESP(path);
+					path += L"\\EFI\\VeraCrypt\\PlatformInfo";
+					File fPlatformInfo(path);
+					fPlatformInfo.GetFileSize(sz);
+					fileContent.resize(sz + 1);
+					fileContent[sz] = 0;
+					fPlatformInfo.Read((byte*)&fileContent[0], sz);
+					// remove UTF-8 BOM if any
+					if (0 == memcmp (fileContent.data(), "\xEF\xBB\xBF", 3))
+					{
+						offset = 3;
+					}
+					else
+						offset = 0;
+					platforminfo = (const char*) &fileContent[offset];
+					TextEditDialogBox(TRUE, hwndDlg, GetString ("EFI_PLATFORM_INFORMATION"), platforminfo);
+				}
+				catch (Exception &e)	{ e.Show(hwndDlg); }
+			}
+			return 0;
+
+		case IDC_EDIT_DCSPROP:
+			if (AskWarnNoYes ("EDIT_DCSPROP_FOR_ADVANCED_ONLY", hwndDlg) == IDYES)
+			{
+				try
+				{
+					std::string dcsprop;
+					ByteArray fileContent;
+					DWORD sz, offset;
+					std::wstring path;
+					GetVolumeESP(path);
+					path += L"\\EFI\\VeraCrypt\\DcsProp";
+					File f1(path);
+					f1.GetFileSize(sz);
+					fileContent.resize(sz + 1);
+					fileContent[sz] = 0;
+					f1.Read((byte*)&fileContent[0], sz);
+					f1.Close();
+					// remove UTF-8 BOM if any
+					if (0 == memcmp (fileContent.data(), "\xEF\xBB\xBF", 3))
+					{
+						offset = 3;
+					}
+					else
+						offset = 0;
+
+					dcsprop = (const char*) &fileContent[offset];
+					while (TextEditDialogBox(FALSE, hwndDlg, GetString ("BOOT_LOADER_CONFIGURATION_FILE"), dcsprop) == IDOK)
+					{
+						if (validateDcsPropXml (dcsprop.c_str()))
+						{
+							// Add UTF-8 BOM
+							fileContent.resize (dcsprop.length() + 3);
+							memcpy (fileContent.data(), "\xEF\xBB\xBF", 3);
+							memcpy (&fileContent[3], &dcsprop[0], dcsprop.length());
+							File f2(path,false,true);
+							f2.Write(fileContent.data(), fileContent.size());
+							f2.Close();
+							break;
+						}
+						else
+						{
+							MessageBoxW (hwndDlg, GetString ("DCSPROP_XML_VALIDATION_FAILED"), lpszTitle, ICON_HAND);
+						}
+					}
+				}
+				catch (Exception &e)	{	e.Show(hwndDlg); }
+			}
+			return 0;
 
 		case IDOK:
 			{
