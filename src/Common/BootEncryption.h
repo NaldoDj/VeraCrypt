@@ -187,6 +187,8 @@ namespace VeraCrypt
 	};
 
 	void GetVolumeESP(wstring& path);
+	std::string ReadESPFile (LPCWSTR szFilePath, bool bSkipUTF8BOM);
+	void WriteESPFile (LPCWSTR szFilePath, LPBYTE pbData, DWORD dwDataLen, bool bAddUTF8BOM);
 
 	class EfiBoot {
 	public:
@@ -274,7 +276,6 @@ namespace VeraCrypt
 		void ProbeRealSystemDriveSize ();
 		bool ReadBootSectorConfig (byte *config, size_t bufLength, byte *userConfig = nullptr, string *customUserMessage = nullptr, uint16 *bootLoaderVersion = nullptr);
 		uint32 ReadDriverConfigurationFlags ();
-		void ReadEfiConfig (const wchar_t* filename, byte* confContent, DWORD maxSize, DWORD* pcbRead);
 		void RegisterBootDriver (bool hiddenSystem);
 		void RegisterFilterDriver (bool registerDriver, FilterType filterType);
 		void RegisterSystemFavoritesService (BOOL registerService);

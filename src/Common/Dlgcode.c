@@ -547,6 +547,20 @@ size_t TrimWhiteSpace(wchar_t *str)
   return out_size;
 }
 
+BOOL IsNullTerminateString (const wchar_t* str, size_t cbSize)
+{
+	if (str && cbSize)
+	{
+		for (size_t i = 0; i < cbSize; i++)
+		{
+			if (str[i] == 0)
+				return TRUE;
+		}
+	}
+
+	return FALSE;
+}
+
 // check the validity of a file name
 BOOL IsValidFileName(const wchar_t* str)
 {
@@ -3364,7 +3378,7 @@ struct _TEXT_EDIT_DIALOG_PARAM {
 	BOOL ReadOnly;
 	std::string&  Text;
 	const WCHAR*  Title;
-	HWND          Parent;
+
 	_TEXT_EDIT_DIALOG_PARAM(BOOL _readOnly, const WCHAR* title, std::string&  _text) : Title(title), Text(_text), ReadOnly(_readOnly) {}
 	_TEXT_EDIT_DIALOG_PARAM& operator=( const _TEXT_EDIT_DIALOG_PARAM& other) { 
 		ReadOnly = other.ReadOnly;
@@ -3416,7 +3430,7 @@ BOOL CALLBACK TextEditDlgProc (HWND hwndDlg, UINT msg, WPARAM wParam, LPARAM lPa
 			if (!prm->ReadOnly)
 			{
 				prm->Text.resize(GetWindowTextLengthA (GetDlgItem (hwndDlg, IDC_INFO_BOX_TEXT)) + 1);
-				GetWindowTextA (GetDlgItem (hwndDlg, IDC_INFO_BOX_TEXT), &(prm->Text)[0], prm->Text.size());
+				GetWindowTextA (GetDlgItem (hwndDlg, IDC_INFO_BOX_TEXT), &(prm->Text)[0], (int) prm->Text.size());
 			}
 			NormalCursor ();
 			EndDialog (hwndDlg, IDOK);
@@ -7154,8 +7168,8 @@ DWORD GetUsedLogicalDrives (void)
 
 		finally_do ({ LeaveCriticalSection (&csWNetCalls); });
 
-		/* update values every 2 seconds to reduce CPU consumption */
-		if ((time (NULL) - g_lastCallTime) > 2)
+		/* update values every 1 minute to reduce CPU consumption */
+		if ((time (NULL) - g_lastCallTime) > 60)
 		{
 			/* detect disconnected mapped network shares and removed
 			 * their associated drives from the list
@@ -7416,7 +7430,6 @@ static BOOL GetDeviceStorageProperty (HANDLE hDevice, STORAGE_PROPERTY_ID proper
 	}
 	else
 		dwRet = ::GetLastError();
-	::CloseHandle(hDevice);
 
 	if (!bRet)
 	{
@@ -8213,9 +8226,14 @@ BOOL IsMountedVolumeID (BYTE volumeID[VOLUME_ID_SIZE])
 	int i;
 
 	memset (&mlist, 0, sizeof (mlist));
-	DeviceIoControl (hDriver, TC_IOCTL_GET_MOUNTED_VOLUMES, &mlist,
-		sizeof (mlist), &mlist, sizeof (mlist), &dwResult,
-		NULL);
+	if (	!DeviceIoControl (hDriver, TC_IOCTL_GET_MOUNTED_VOLUMES, &mlist,
+				sizeof (mlist), &mlist, sizeof (mlist), &dwResult,
+				NULL) 
+		|| (mlist.ulMountedDrives >= (1 << 26))
+		)
+	{
+		return FALSE; 
+	}
 
 	if (mlist.ulMountedDrives)
 	{
@@ -8257,16 +8275,26 @@ BOOL IsMountedVolume (const wchar_t *volname)
 			StringCbCopyW (volume, sizeof (volume), resolvedPath.c_str());
 
 		memset (&mlist, 0, sizeof (mlist));
-		DeviceIoControl (hDriver, TC_IOCTL_GET_MOUNTED_VOLUMES, &mlist,
-			sizeof (mlist), &mlist, sizeof (mlist), &dwResult,
-			NULL);
+		if (	!DeviceIoControl (hDriver, TC_IOCTL_GET_MOUNTED_VOLUMES, &mlist,
+					sizeof (mlist), &mlist, sizeof (mlist), &dwResult,
+					NULL) 
+			|| (mlist.ulMountedDrives >= (1 << 26))
+			)
+		{
+			return FALSE; 
+		}
 
 		if (mlist.ulMountedDrives)
 		{
 			for (i=0 ; i<26; i++)
 			{
-				if ((mlist.ulMountedDrives & (1 << i)) && (0 == _wcsicmp ((wchar_t *) mlist.wszVolume[i], volume)))
+				if ((mlist.ulMountedDrives & (1 << i)) 
+					&& IsNullTerminateString (mlist.wszVolume[i], TC_MAX_PATH) 
+					&& (0 == _wcsicmp ((wchar_t *) mlist.wszVolume[i], volume))
+					)
+				{
 					return TRUE;
+				}
 			}
 		}
 	}
@@ -8295,16 +8323,26 @@ int GetMountedVolumeDriveNo (wchar_t *volname)
 		StringCbCopyW (volume, sizeof (volume), resolvedPath.c_str());
 
 	memset (&mlist, 0, sizeof (mlist));
-	DeviceIoControl (hDriver, TC_IOCTL_GET_MOUNTED_VOLUMES, &mlist,
-		sizeof (mlist), &mlist, sizeof (mlist), &dwResult,
-		NULL);
+	if (	!DeviceIoControl (hDriver, TC_IOCTL_GET_MOUNTED_VOLUMES, &mlist,
+				sizeof (mlist), &mlist, sizeof (mlist), &dwResult,
+				NULL) 
+		|| (mlist.ulMountedDrives >= (1 << 26))
+		)
+	{
+		return -1; 
+	}
 
 	if (mlist.ulMountedDrives)
 	{
 		for (i=0 ; i<26; i++)
 		{
-			if ((mlist.ulMountedDrives & (1 << i)) && (0 == _wcsicmp ((wchar_t *) mlist.wszVolume[i], (WCHAR *)volume)))
+			if ((mlist.ulMountedDrives & (1 << i)) 
+				&& IsNullTerminateString (mlist.wszVolume[i], TC_MAX_PATH)
+				&& (0 == _wcsicmp ((wchar_t *) mlist.wszVolume[i], (WCHAR *)volume))
+				)
+			{
 				return i;
+			}
 		}
 	}
 
@@ -8426,7 +8464,7 @@ BOOL GetDriveGeometry (const wchar_t *deviceName, PDISK_GEOMETRY_EX diskGeometry
 
 	if (bResult && (dwResult == sizeof (dg)) && dg.diskGeometry.BytesPerSector)
 	{
-		ZeroMemory (diskGeometry, sizeof (PDISK_GEOMETRY_EX));
+		ZeroMemory (diskGeometry, sizeof (DISK_GEOMETRY_EX));
 		memcpy (&diskGeometry->Geometry, &dg.diskGeometry, sizeof (DISK_GEOMETRY));
 		diskGeometry->DiskSize.QuadPart = dg.DiskSize.QuadPart;
 		return TRUE;
@@ -9342,11 +9380,19 @@ LRESULT ListSubItemSet (HWND list, int index, int subIndex, const wchar_t *strin
 BOOL GetMountList (MOUNT_LIST_STRUCT *list)
 {
 	DWORD dwResult;
+	MOUNT_LIST_STRUCT localList = {0};
 
-	memset (list, 0, sizeof (*list));
-	return DeviceIoControl (hDriver, TC_IOCTL_GET_MOUNTED_VOLUMES, list,
-		sizeof (*list), list, sizeof (*list), &dwResult,
-		NULL);
+	if ( list && DeviceIoControl (hDriver, TC_IOCTL_GET_MOUNTED_VOLUMES, &localList,
+			sizeof (localList), &localList, sizeof (localList), &dwResult,
+			NULL)
+			&& (localList.ulMountedDrives < (1 << 26))
+		)
+	{
+		memcpy (list, &localList, sizeof (MOUNT_LIST_STRUCT));
+		return TRUE;
+	}
+	else
+		return FALSE;
 }
 
 
@@ -11854,44 +11900,47 @@ std::vector <HostDevice> GetHostRawDeviceList ()
 				NULL ) && ( ERROR_INSUFFICIENT_BUFFER == GetLastError()))
 			{
 				deviceInterfaceDetailData = ( PSP_DEVICE_INTERFACE_DETAIL_DATA ) malloc( requiredSize );
-				ZeroMemory( deviceInterfaceDetailData, requiredSize );
-				deviceInterfaceDetailData->cbSize = sizeof( SP_DEVICE_INTERFACE_DETAIL_DATA );
-				if (SetupDiGetDeviceInterfaceDetail( diskClassDevices,
-					&deviceInterfaceData,
-					deviceInterfaceDetailData,
-					requiredSize,
-					NULL,
-					NULL ))
+				if (deviceInterfaceDetailData)
 				{
-					HANDLE disk = CreateFile( deviceInterfaceDetailData->DevicePath,
-						0,
-						FILE_SHARE_READ | FILE_SHARE_WRITE,
+					ZeroMemory( deviceInterfaceDetailData, requiredSize );
+					deviceInterfaceDetailData->cbSize = sizeof( SP_DEVICE_INTERFACE_DETAIL_DATA );
+					if (SetupDiGetDeviceInterfaceDetail( diskClassDevices,
+						&deviceInterfaceData,
+						deviceInterfaceDetailData,
+						requiredSize,
 						NULL,
-						OPEN_EXISTING,
-						0,
-						NULL );
-					if ( INVALID_HANDLE_VALUE != disk)
+						NULL ))
 					{
-						if (DeviceIoControl( disk,
-							IOCTL_STORAGE_GET_DEVICE_NUMBER,
-							NULL,
+						HANDLE disk = CreateFile( deviceInterfaceDetailData->DevicePath,
 							0,
-							&diskNumber,
-							sizeof( STORAGE_DEVICE_NUMBER ),
-							&bytesReturned,
-							NULL ))
+							FILE_SHARE_READ | FILE_SHARE_WRITE,
+							NULL,
+							OPEN_EXISTING,
+							0,
+							NULL );
+						if ( INVALID_HANDLE_VALUE != disk)
 						{
-							HostDevice device;
-							device.Path = deviceInterfaceDetailData->DevicePath;
-							device.SystemNumber = diskNumber.DeviceNumber;
-							list.push_back (device);
+							if (DeviceIoControl( disk,
+								IOCTL_STORAGE_GET_DEVICE_NUMBER,
+								NULL,
+								0,
+								&diskNumber,
+								sizeof( STORAGE_DEVICE_NUMBER ),
+								&bytesReturned,
+								NULL ))
+							{
+								HostDevice device;
+								device.Path = deviceInterfaceDetailData->DevicePath;
+								device.SystemNumber = diskNumber.DeviceNumber;
+								list.push_back (device);
+							}
+
+							CloseHandle( disk );
 						}
-
-						CloseHandle( disk );
 					}
-				}
 
-				free (deviceInterfaceDetailData);
+					free (deviceInterfaceDetailData);
+				}
 			}
 		}
 
@@ -11996,62 +12045,66 @@ void UpdateMountableHostDeviceList ()
 				(LPVOID) buffer.data(),
 				(DWORD) buffer.size(),
 				(LPDWORD) &bytesReturned,
-				NULL))
+				NULL) && (bytesReturned >= sizeof (DRIVE_LAYOUT_INFORMATION_EX)))
 			{
 				PDRIVE_LAYOUT_INFORMATION_EX layout = (PDRIVE_LAYOUT_INFORMATION_EX) buffer.data();
-				for (DWORD i = 0; i < layout->PartitionCount; i++)
+				// sanity checks
+				if (layout->PartitionCount <= 256)
 				{
-					if (layout->PartitionEntry[i].PartitionStyle == PARTITION_STYLE_MBR)
+					for (DWORD i = 0; i < layout->PartitionCount; i++)
 					{
-						if (layout->PartitionEntry[i].Mbr.PartitionType == 0)
-							continue;
-
-						bHasPartition = true;
-
-						/* skip dynamic volume */
-						if (layout->PartitionEntry[i].Mbr.PartitionType == PARTITION_LDM)
+						if (layout->PartitionEntry[i].PartitionStyle == PARTITION_STYLE_MBR)
 						{
-							bIsDynamic = true;
-							/* remove any partition that may have been added */
-							while (!mountableDevices.empty() && (mountableDevices.back().SystemNumber == It->SystemNumber))
-								mountableDevices.pop_back ();
-							break;
+							if (layout->PartitionEntry[i].Mbr.PartitionType == 0)
+								continue;
+
+							bHasPartition = true;
+
+							/* skip dynamic volume */
+							if (layout->PartitionEntry[i].Mbr.PartitionType == PARTITION_LDM)
+							{
+								bIsDynamic = true;
+								/* remove any partition that may have been added */
+								while (!mountableDevices.empty() && (mountableDevices.back().SystemNumber == It->SystemNumber))
+									mountableDevices.pop_back ();
+								break;
+							}
 						}
-					}
 
-					if (layout->PartitionEntry[i].PartitionStyle == PARTITION_STYLE_GPT)
-					{
-						if (IsEqualGUID(layout->PartitionEntry[i].Gpt.PartitionType, PARTITION_ENTRY_UNUSED_GUID))
-							continue;
-
-						bHasPartition = true;
-
-						/* skip dynamic volume */
-						if (	IsEqualGUID(layout->PartitionEntry[i].Gpt.PartitionType, PARTITION_LDM_METADATA_GUID)
-							||	IsEqualGUID(layout->PartitionEntry[i].Gpt.PartitionType, PARTITION_LDM_DATA_GUID)
-							)
+						if (layout->PartitionEntry[i].PartitionStyle == PARTITION_STYLE_GPT)
 						{
-							bIsDynamic = true;
-							/* remove any partition that may have been added */
-							while (!mountableDevices.empty() && (mountableDevices.back().SystemNumber == It->SystemNumber))
-								mountableDevices.pop_back ();
-							break;
-						}
-					}
+							if (IsEqualGUID(layout->PartitionEntry[i].Gpt.PartitionType, PARTITION_ENTRY_UNUSED_GUID))
+								continue;
 
-					WCHAR path[MAX_PATH];
-					StringCbPrintfW (path, sizeof(path), L"\\\\?\\GLOBALROOT\\Device\\Harddisk%d\\Partition%d", It->SystemNumber, layout->PartitionEntry[i].PartitionNumber);
-					HANDLE handle = CreateFile( path,
-						0,
-						FILE_SHARE_READ | FILE_SHARE_WRITE,
-						NULL,
-						OPEN_EXISTING,
-						0,
-						NULL );
-					if (handle != INVALID_HANDLE_VALUE)
-					{
-						AddDeviceToList (mountableDevices, It->SystemNumber, layout->PartitionEntry[i].PartitionNumber);
-						CloseHandle (handle);
+							bHasPartition = true;
+
+							/* skip dynamic volume */
+							if (	IsEqualGUID(layout->PartitionEntry[i].Gpt.PartitionType, PARTITION_LDM_METADATA_GUID)
+								||	IsEqualGUID(layout->PartitionEntry[i].Gpt.PartitionType, PARTITION_LDM_DATA_GUID)
+								)
+							{
+								bIsDynamic = true;
+								/* remove any partition that may have been added */
+								while (!mountableDevices.empty() && (mountableDevices.back().SystemNumber == It->SystemNumber))
+									mountableDevices.pop_back ();
+								break;
+							}
+						}
+
+						WCHAR path[MAX_PATH];
+						StringCbPrintfW (path, sizeof(path), L"\\\\?\\GLOBALROOT\\Device\\Harddisk%d\\Partition%d", It->SystemNumber, layout->PartitionEntry[i].PartitionNumber);
+						HANDLE handle = CreateFile( path,
+							0,
+							FILE_SHARE_READ | FILE_SHARE_WRITE,
+							NULL,
+							OPEN_EXISTING,
+							0,
+							NULL );
+						if (handle != INVALID_HANDLE_VALUE)
+						{
+							AddDeviceToList (mountableDevices, It->SystemNumber, layout->PartitionEntry[i].PartitionNumber);
+							CloseHandle (handle);
+						}
 					}
 				}
 			}
@@ -12104,16 +12157,26 @@ wstring FindDeviceByVolumeID (const BYTE volumeID [VOLUME_ID_SIZE])
 	DWORD dwResult;
 
 	memset (&mlist, 0, sizeof (mlist));
-	DeviceIoControl (hDriver, TC_IOCTL_GET_MOUNTED_VOLUMES, &mlist,
-		sizeof (mlist), &mlist, sizeof (mlist), &dwResult,
-		NULL);
+	if (	!DeviceIoControl (hDriver, TC_IOCTL_GET_MOUNTED_VOLUMES, &mlist,
+				sizeof (mlist), &mlist, sizeof (mlist), &dwResult,
+				NULL) 
+		|| (mlist.ulMountedDrives >= (1 << 26))
+		)
+	{
+		return L""; 
+	}
 
 	if (mlist.ulMountedDrives)
 	{
 		for (int i=0 ; i < 26; i++)
 		{
 			if ((mlist.ulMountedDrives & (1 << i)) && (0 == memcmp (mlist.volumeID[i], volumeID, VOLUME_ID_SIZE)))
-				return mlist.wszVolume[i];
+			{
+				if (IsNullTerminateString (mlist.wszVolume[i], TC_MAX_PATH))
+					return mlist.wszVolume[i];
+				else
+					return L"";
+			}
 		}
 	}
 
