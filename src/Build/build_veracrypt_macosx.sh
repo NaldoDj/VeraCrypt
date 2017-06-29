@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2013-2016 IDRIX
+# Copyright (c) 2013-2017 IDRIX
 # Governed by the Apache License 2.0 the full text of which is contained
 # in the file License.txt included in VeraCrypt binary and source
 # code distribution packages.
@@ -19,8 +19,8 @@ echo "Using wxWidgets sources in $WX_ROOT"
 # this will be the temporary wxWidgets directory
 export WX_BUILD_DIR=$PARENTDIR/wxBuild
 
-# define the SDK version to use. We use 10.6 by default
-export VC_OSX_TARGET=10.6
+# define the SDK version to use. We use 10.7 by default
+export VC_OSX_TARGET=10.7
 echo "Using MacOSX SDK $VC_OSX_TARGET"
 
 
