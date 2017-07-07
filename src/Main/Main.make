@@ -204,6 +204,7 @@ endif
 
 ifeq "$(PLATFORM)" "Linux"
 prepare: $(APPNAME)
+	rm -fr $(PWD)/Setup/Linux/usr
 	mkdir -p $(PWD)/Setup/Linux/usr/bin
 	mkdir -p $(PWD)/Setup/Linux/usr/share/$(APPNAME)/doc/HTML
 	cp $(PWD)/Main/$(APPNAME) $(PWD)/Setup/Linux/usr/bin/$(APPNAME)
@@ -221,7 +222,7 @@ endif
 
 
 install: prepare
-	cp -R $(PWD)/Setup/Linux/usr /.
+	cp -R $(CURDIR)/Setup/Linux/usr $(DESTDIR)/.
 
 ifeq "$(TC_BUILD_CONFIG)" "Release"
 package: prepare
