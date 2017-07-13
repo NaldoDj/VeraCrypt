@@ -9133,6 +9133,21 @@ static VOID WINAPI SystemFavoritesServiceCtrlHandler (DWORD control)
 		SystemFavoritesServiceSetStatus (SystemFavoritesServiceStatus.dwCurrentState);
 }
 
+static LONG WINAPI SystemFavoritesServiceExceptionHandler (EXCEPTION_POINTERS *ep)
+{
+	SetUnhandledExceptionFilter (NULL);
+
+	if (!(ReadDriverConfigurationFlags() & TC_DRIVER_CONFIG_CACHE_BOOT_PASSWORD))
+		WipeCache (NULL, TRUE);
+
+	UnhandledExceptionFilter (ep);
+	return EXCEPTION_EXECUTE_HANDLER;
+}
+
+static void SystemFavoritesServiceInvalidParameterHandler (const wchar_t *expression, const wchar_t *function, const wchar_t *file, unsigned int line, uintptr_t reserved)
+{
+	TC_THROW_FATAL_EXCEPTION;
+}
 
 static VOID WINAPI SystemFavoritesServiceMain (DWORD argc, LPTSTR *argv)
 {
@@ -9143,6 +9158,11 @@ static VOID WINAPI SystemFavoritesServiceMain (DWORD argc, LPTSTR *argv)
 	SystemFavoritesServiceStatusHandle = RegisterServiceCtrlHandler (TC_SYSTEM_FAVORITES_SERVICE_NAME, SystemFavoritesServiceCtrlHandler);
 	if (!SystemFavoritesServiceStatusHandle)
 		return;
+
+	InitGlobalLocks ();
+
+	SetUnhandledExceptionFilter (SystemFavoritesServiceExceptionHandler);
+	_set_invalid_parameter_handler (SystemFavoritesServiceInvalidParameterHandler);
 
 	SystemFavoritesServiceSetStatus (SERVICE_START_PENDING, 120000);
 
@@ -9166,6 +9186,8 @@ static VOID WINAPI SystemFavoritesServiceMain (DWORD argc, LPTSTR *argv)
 	{
 		SystemFavoritesServiceLogError (wstring (L"System Favorites mounting process failed."));
 	}
+
+	FinalizeGlobalLocks ();
 
 	SystemFavoritesServiceSetStatus (SERVICE_RUNNING);
 	SystemFavoritesServiceSetStatus (SERVICE_STOPPED);
