@@ -1267,18 +1267,18 @@ BOOL CALLBACK AboutDlgProc (HWND hwndDlg, UINT msg, WPARAM wParam, LPARAM lParam
 			L"Based on TrueCrypt 7.1a, freely available at http://www.truecrypt.org/ .\r\n\r\n"
 
 			L"Portions of this software:\r\n"
-			L"Copyright \xA9 2013-2017 IDRIX. All rights reserved.\r\n"
+			L"Copyright \xA9 2013-2018 IDRIX. All rights reserved.\r\n"
 			L"Copyright \xA9 2003-2012 TrueCrypt Developers Association. All Rights Reserved.\r\n"
 			L"Copyright \xA9 1998-2000 Paul Le Roux. All Rights Reserved.\r\n"
 			L"Copyright \xA9 1998-2008 Brian Gladman. All Rights Reserved.\r\n"
 			L"Copyright \xA9 1995-2017 Jean-loup Gailly and Mark Adler.\r\n"
 			L"Copyright \xA9 2016 Disk Cryptography Services for EFI (DCS), Alex Kolotnikov.\r\n"
-			L"Copyright \xA9 Dieter Baron and Thomas Klausner.\r\n"
+			L"Copyright \xA9 1999-2017 Dieter Baron and Thomas Klausner.\r\n"
 			L"Copyright \xA9 2013, Alexey Degtyarev. All rights reserved.\r\n"
-			L"Copyright \xA9 1999-2013,2014,2015,2016 Jack Lloyd. All rights reserved.\r\n\r\n"
+			L"Copyright \xA9 1999-2016 Jack Lloyd. All rights reserved.\r\n\r\n"
 
 			L"This software as a whole:\r\n"
-			L"Copyright \xA9 2013-2017 IDRIX. All rights reserved.\r\n\r\n"
+			L"Copyright \xA9 2013-2018 IDRIX. All rights reserved.\r\n\r\n"
 
 			L"An IDRIX Release");
 
@@ -1790,13 +1790,13 @@ static int g_waitCursorCounter = 0;
 void
 WaitCursor ()
 {
-	static HCURSOR hcWait;
+	static HCURSOR hcWait = NULL;
 	if (hcWait == NULL)
 		hcWait = LoadCursor (NULL, IDC_WAIT);
 
 	if ((g_waitCursorCounter == 0) || (hCursor != hcWait))
 	{
-		SetCursor (hcWait);
+		if (!Silent) SetCursor (hcWait);
 		hCursor = hcWait;
 	}
 	g_waitCursorCounter++;
@@ -1805,14 +1805,14 @@ WaitCursor ()
 void
 NormalCursor ()
 {
-	static HCURSOR hcArrow;
+	static HCURSOR hcArrow = NULL;
 	if (hcArrow == NULL)
 		hcArrow = LoadCursor (NULL, IDC_ARROW);
 	if (g_waitCursorCounter > 0)
 		g_waitCursorCounter--;
 	if (g_waitCursorCounter == 0)
 	{
-		SetCursor (hcArrow);
+		if (!Silent) SetCursor (hcArrow);
 		hCursor = NULL;
 	}
 }
@@ -1820,12 +1820,12 @@ NormalCursor ()
 void
 ArrowWaitCursor ()
 {
-	static HCURSOR hcArrowWait;
+	static HCURSOR hcArrowWait = NULL;
 	if (hcArrowWait == NULL)
 		hcArrowWait = LoadCursor (NULL, IDC_APPSTARTING);
 	if ((g_waitCursorCounter == 0) || (hCursor != hcArrowWait))
 	{
-		SetCursor (hcArrowWait);
+		if (!Silent) SetCursor (hcArrowWait);
 		hCursor = hcArrowWait;
 	}
 	g_waitCursorCounter++;
@@ -1833,7 +1833,7 @@ ArrowWaitCursor ()
 
 void HandCursor ()
 {
-	static HCURSOR hcHand;
+	static HCURSOR hcHand = NULL;
 	if (hcHand == NULL)
 		hcHand = LoadCursor (NULL, IDC_HAND);
 	SetCursor (hcHand);
@@ -7577,33 +7577,42 @@ BOOL CALLBACK WaitDlgProc (HWND hwndDlg, UINT msg, WPARAM wParam, LPARAM lParam)
 }
 
 
-void BringToForeground(HWND hWnd)
+// Based on source: https://www.codeproject.com/Tips/76427/How-to-bring-window-to-top-with-SetForegroundWindo?msg=5285754#xx5285754xx
+void BringToForeground (HWND hWnd)
 {
 	if(!::IsWindow(hWnd)) return;
- 
-	DWORD lockTimeOut = 0;
 	HWND  hCurrWnd = ::GetForegroundWindow();
 	DWORD dwThisTID = ::GetCurrentThreadId(),
 	      dwCurrTID = ::GetWindowThreadProcessId(hCurrWnd,0);
- 
+	// This structure will be used to create the keyboard
+	// input event.
+	INPUT ip;
+
 	if (hCurrWnd != hWnd)
 	{
 		if(dwThisTID != dwCurrTID)
 		{
-			::AttachThreadInput(dwThisTID, dwCurrTID, TRUE);
-	 
-			::SystemParametersInfo(SPI_GETFOREGROUNDLOCKTIMEOUT,0,&lockTimeOut,0);
-			::SystemParametersInfo(SPI_SETFOREGROUNDLOCKTIMEOUT,0,0,SPIF_SENDWININICHANGE | SPIF_UPDATEINIFILE);
-	 
-			::AllowSetForegroundWindow(ASFW_ANY);
+			// Set up a generic keyboard event.
+			ip.type = INPUT_KEYBOARD;
+			ip.ki.wScan = 0; // hardware scan code for key
+			ip.ki.time = 0;
+			ip.ki.dwExtraInfo = 0;
+
+			// Press the "A" key
+			ip.ki.wVk = VK_MENU; // virtual-key code for the "a" key
+			ip.ki.dwFlags = 0; // 0 for key press
+			SendInput(1, &ip, sizeof(INPUT));
+
+			::Sleep(250); //Sometimes SetForegroundWindow will fail and the window will flash instead of it being show. Sleeping for a bit seems to help.
 		}
-	 
+	
 		::SetForegroundWindow(hWnd);
-	 
+
 		if(dwThisTID != dwCurrTID)
 		{
-			::SystemParametersInfo(SPI_SETFOREGROUNDLOCKTIMEOUT,0,(PVOID)lockTimeOut,SPIF_SENDWININICHANGE | SPIF_UPDATEINIFILE);
-			::AttachThreadInput(dwThisTID, dwCurrTID, FALSE);
+			// Release the "A" key
+			ip.ki.dwFlags = KEYEVENTF_KEYUP; // KEYEVENTF_KEYUP for key release
+			SendInput(1, &ip, sizeof(INPUT));
 		}
 	}
 
@@ -7616,9 +7625,14 @@ void BringToForeground(HWND hWnd)
 #endif
 }
 
+static LRESULT CALLBACK ShowWaitDialogParentWndProc (HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
+{
+	return DefWindowProcW (hWnd, message, wParam, lParam);
+}
+
+
 void ShowWaitDialog(HWND hwnd, BOOL bUseHwndAsParent, WaitThreadProc callback, void* pArg)
 {
-	HWND hParent = (hwnd && bUseHwndAsParent)? hwnd : GetDesktopWindow();
 	BOOL bEffectiveHideWaitingDialog = bCmdHideWaitingDialogValid? bCmdHideWaitingDialog : bHideWaitingDialog;
 	WaitThreadParam threadParam;
 	threadParam.callback = callback;
@@ -7632,14 +7646,39 @@ void ShowWaitDialog(HWND hwnd, BOOL bUseHwndAsParent, WaitThreadProc callback, v
 	}
 	else
 	{
+		const wchar_t *className = L"VeraCryptShowWaitDialogParent";
 		BOOL bIsForeground = FALSE;
 		HWND creatorWnd = hwnd? hwnd : MainDlg;
 		WaitDialogDisplaying = TRUE;
+		HWND hParent = NULL;
+
 		if (creatorWnd)
 		{
 			if (GetForegroundWindow () == creatorWnd)
 				bIsForeground = TRUE;
 			EnableWindow (creatorWnd, FALSE);
+		}
+
+		if (hwnd && bUseHwndAsParent)
+			hParent = hwnd;
+		else
+		{		
+			/*  create invisible window and use it as parent */
+			WNDCLASSEXW winClass;
+
+			memset (&winClass, 0, sizeof (winClass));
+			winClass.cbSize = sizeof (WNDCLASSEX);
+			winClass.lpfnWndProc = (WNDPROC) ShowWaitDialogParentWndProc;
+			winClass.hInstance = hInst;
+			winClass.lpszClassName = className;
+			RegisterClassExW (&winClass);
+
+			hParent = CreateWindowExW (WS_EX_TOOLWINDOW | WS_EX_LAYERED, className, L"VeraCrypt ShowWaitDialog Parent", 0, 0, 0, 1, 1, NULL, NULL, hInst, NULL);
+			if (hParent)
+			{
+				SetLayeredWindowAttributes (hParent, 0, 1, LWA_ALPHA);
+				ShowWindow (hParent, SW_SHOWNORMAL);
+			}
 		}
 
 		finally_do_arg2 (HWND, creatorWnd, BOOL, bIsForeground, { if (finally_arg) { EnableWindow(finally_arg, TRUE); if (finally_arg2) BringToForeground (finally_arg);}});
@@ -7649,6 +7688,13 @@ void ShowWaitDialog(HWND hwnd, BOOL bUseHwndAsParent, WaitThreadProc callback, v
 					(DLGPROC) WaitDlgProc, (LPARAM) &threadParam);
 
 		WaitDialogDisplaying = FALSE;
+
+		if (!(hwnd && bUseHwndAsParent))
+		{
+			if (hParent)
+				DestroyWindow (hParent);
+			UnregisterClassW (className, hInst);
+		}
 	}
 }
 
@@ -13094,6 +13140,7 @@ static BOOL GenerateRandomString (HWND hwndDlg, LPTSTR szName, DWORD maxCharsCou
 typedef struct
 {
 	HDESK hDesk;
+	LPCWSTR szDesktopName;
 	HINSTANCE hInstance;
 	LPCWSTR lpTemplateName;
 	DLGPROC lpDialogFunc;
@@ -13101,15 +13148,112 @@ typedef struct
 	INT_PTR retValue;
 } SecureDesktopThreadParam;
 
+typedef struct
+{
+	LPCWSTR szVCDesktopName;
+	HDESK hVcDesktop;
+	volatile BOOL* pbStopMonitoring;
+} SecureDesktopMonitoringThreadParam;
+
+#define SECUREDESKTOP_MONOTIR_PERIOD	500
+
+// This thread checks if VeraCrypt secure desktop is the one that has user input
+// and if it is not then it will call SwitchDesktop to make it the input desktop
+static unsigned int __stdcall SecureDesktopMonitoringThread( LPVOID lpThreadParameter ) 
+{
+	SecureDesktopMonitoringThreadParam* pMonitorParam = (SecureDesktopMonitoringThreadParam*) lpThreadParameter;
+	if (pMonitorParam)
+	{
+		volatile BOOL* pbStopMonitoring = pMonitorParam->pbStopMonitoring;
+		LPCWSTR szVCDesktopName = pMonitorParam->szVCDesktopName;
+		HDESK hVcDesktop = pMonitorParam->hVcDesktop;
+
+		while (!*pbStopMonitoring)
+		{
+			// check that our secure desktop is still the input desktop
+			// otherwise, switch to it
+			BOOL bPerformSwitch = FALSE;
+			HDESK currentDesk = OpenInputDesktop (0, FALSE, GENERIC_READ);
+			if (currentDesk)
+			{
+				LPWSTR szName = NULL;
+				DWORD dwLen = 0;
+				if (!GetUserObjectInformation (currentDesk, UOI_NAME, NULL, 0, &dwLen))
+				{
+					szName = (LPWSTR) malloc (dwLen);
+					if (szName)
+					{
+						if (GetUserObjectInformation (currentDesk, UOI_NAME, szName, dwLen, &dwLen))
+						{
+							if (0 != _wcsicmp (szName, szVCDesktopName))
+								bPerformSwitch = TRUE;
+						}
+						free (szName);
+					}
+				}
+				CloseDesktop (currentDesk);
+			}
+
+			if (bPerformSwitch)
+				SwitchDesktop (hVcDesktop);
+
+			Sleep (SECUREDESKTOP_MONOTIR_PERIOD);
+		}
+	}
+
+	return 0;
+}
+
 static DWORD WINAPI SecureDesktopThread(LPVOID lpThreadParameter)
 {
+	volatile BOOL bStopMonitoring = FALSE;
+	HANDLE hMonitoringThread = NULL;
+	unsigned int monitoringThreadID = 0;
 	SecureDesktopThreadParam* pParam = (SecureDesktopThreadParam*) lpThreadParameter;
+	SecureDesktopMonitoringThreadParam monitorParam;
+	HDESK hOriginalDesk = GetThreadDesktop (GetCurrentThreadId ());
+	BOOL bNewDesktopSet = FALSE;
+	int counter = 0;
 
-	SetThreadDesktop (pParam->hDesk);
-	SwitchDesktop (pParam->hDesk);
+	// wait for SwitchDesktop to succeed before using it for current thread
+	// we wait a maximum of 5 seconds
+	for (counter = 0; counter < 10; counter++)
+	{
+		if (SwitchDesktop (pParam->hDesk))
+		{
+			bNewDesktopSet = TRUE;
+			break;
+		}
+		Sleep (SECUREDESKTOP_MONOTIR_PERIOD);
+	}
+
+	if (bNewDesktopSet)
+	{
+		SetThreadDesktop (pParam->hDesk);
+
+		// create the thread that will ensure that VeraCrypt secure desktop has always user input
+		monitorParam.szVCDesktopName = pParam->szDesktopName;
+		monitorParam.hVcDesktop = pParam->hDesk;
+		monitorParam.pbStopMonitoring = &bStopMonitoring;
+		hMonitoringThread = (HANDLE) _beginthreadex (NULL, 0, SecureDesktopMonitoringThread, (LPVOID) &monitorParam, 0, &monitoringThreadID);
+	}
 
 	pParam->retValue = DialogBoxParamW (pParam->hInstance, pParam->lpTemplateName, 
 						NULL, pParam->lpDialogFunc, pParam->dwInitParam);
+
+	if (hMonitoringThread)
+	{
+		bStopMonitoring = TRUE;
+
+		WaitForSingleObject (hMonitoringThread, INFINITE);
+		CloseHandle (hMonitoringThread);
+	}
+
+	if (bNewDesktopSet)
+	{
+		SetThreadDesktop (hOriginalDesk);
+		SwitchDesktop (hOriginalDesk);
+	}
 
 	return 0;
 }
@@ -13169,10 +13313,10 @@ INT_PTR SecureDesktopDialogBoxParam(
 		hSecureDesk = CreateDesktop (szDesktopName, NULL, NULL, 0, desktopAccess, NULL);
 		if (hSecureDesk)
 		{
-			HDESK hOriginalDesk = GetThreadDesktop (GetCurrentThreadId ());
 			SecureDesktopThreadParam param;
 	
 			param.hDesk = hSecureDesk;
+			param.szDesktopName = szDesktopName;
 			param.hInstance = hInstance;
 			param.lpTemplateName = lpTemplateName;
 			param.lpDialogFunc = lpDialogFunc;
@@ -13184,9 +13328,6 @@ INT_PTR SecureDesktopDialogBoxParam(
 			{
 				WaitForSingleObject (hThread, INFINITE);
 				CloseHandle (hThread);
-
-				SwitchDesktop (hOriginalDesk);
-				SetThreadDesktop (hOriginalDesk);
 
 				retValue = param.retValue;
 				bSuccess = TRUE;
