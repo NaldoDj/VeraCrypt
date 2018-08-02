@@ -135,6 +135,7 @@ extern OSVersionEnum nCurrentOS;
 extern int CurrentOSMajor;
 extern int CurrentOSMinor;
 extern int CurrentOSServicePack;
+extern int CurrentOSBuildNumber;
 extern BOOL RemoteSession;
 extern HANDLE hDriver;
 extern HINSTANCE hInst;
@@ -525,10 +526,13 @@ BOOL TranslateVolumeID (HWND hwndDlg, wchar_t* pathValue, size_t cchPathValue);
 BOOL CopyTextToClipboard (const wchar_t* txtValue);
 BOOL LaunchElevatedProcess (HWND hwndDlg, const wchar_t* szModPath, const wchar_t* args);
 BOOL GetFreeDriveLetter(WCHAR* pCh);
-BOOL RaisePrivileges(void);
+BOOL SetPrivilege(LPTSTR szPrivilegeName, BOOL bEnable);
 BOOL DeleteDirectory (const wchar_t* szDirName);
 INT_PTR SecureDesktopDialogBoxParam (HINSTANCE, LPCWSTR, HWND, DLGPROC, LPARAM);
-
+BOOL VerifyModuleSignature (const wchar_t* path);
+void GetInstallationPath (HWND hwndDlg, wchar_t* szInstallPath, DWORD cchSize, BOOL* pbInstallPathDetermined);
+BOOL GetSetupconfigLocation (wchar_t* path, DWORD cchSize);
+BOOL BufferHasPattern (const unsigned char* buffer, size_t bufferLen, const void* pattern, size_t patternLen);
 #ifdef __cplusplus
 }
 

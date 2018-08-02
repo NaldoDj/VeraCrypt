@@ -75,6 +75,8 @@
 #endif
 
 #include <Setupapi.h>
+#include <Softpub.h>
+#include <WinTrust.h>
 #include <strsafe.h>
 
 #pragma comment( lib, "setupapi.lib" )
@@ -145,6 +147,7 @@ OSVersionEnum nCurrentOS = WIN_UNKNOWN;
 int CurrentOSMajor = 0;
 int CurrentOSMinor = 0;
 int CurrentOSServicePack = 0;
+int CurrentOSBuildNumber = 0;
 BOOL RemoteSession = FALSE;
 BOOL UacElevated = FALSE;
 
@@ -266,6 +269,8 @@ HMODULE hbcryptprimitivesdll = NULL;
 HMODULE hMsls31 = NULL;
 HMODULE hntmartadll = NULL;
 HMODULE hwinscarddll = NULL;
+HMODULE hmsvcrtdll = NULL;
+HMODULE hWinTrustLib = NULL;
 
 #define FREE_DLL(h)	if (h) { FreeLibrary (h); h = NULL;}
 
@@ -316,6 +321,36 @@ SetupOpenInfFileWPtr SetupOpenInfFileWFn = NULL;
 SHDeleteKeyWPtr SHDeleteKeyWFn = NULL;
 SHStrDupWPtr SHStrDupWFn = NULL;
 ChangeWindowMessageFilterPtr ChangeWindowMessageFilterFn = NULL;
+
+typedef LONG (WINAPI *WINVERIFYTRUST)(HWND hwnd, GUID *pgActionID, LPVOID pWVTData);
+typedef CRYPT_PROVIDER_DATA* (WINAPI *WTHELPERPROVDATAFROMSTATEDATA)(HANDLE hStateData);
+typedef CRYPT_PROVIDER_SGNR* (WINAPI *WTHELPERGETPROVSIGNERFROMCHAIN)(CRYPT_PROVIDER_DATA *pProvData,
+                                                                       DWORD idxSigner,
+                                                                       BOOL fCounterSigner,
+                                                                       DWORD idxCounterSigner);
+typedef CRYPT_PROVIDER_CERT* (WINAPI *WTHELPERGETPROVCERTFROMCHAIN)(CRYPT_PROVIDER_SGNR *pSgnr,
+                                                                     DWORD idxCert);
+
+static WINVERIFYTRUST WinVerifyTrustFn = NULL;
+static WTHELPERPROVDATAFROMSTATEDATA WTHelperProvDataFromStateDataFn = NULL;
+static WTHELPERGETPROVSIGNERFROMCHAIN WTHelperGetProvSignerFromChainFn = NULL;
+static WTHELPERGETPROVCERTFROMCHAIN WTHelperGetProvCertFromChainFn = NULL;
+
+static unsigned char gpbSha1CodeSignCertFingerprint[64] = {
+	0xCD, 0xF3, 0x05, 0xAD, 0xAE, 0xD3, 0x91, 0xF2, 0x0D, 0x95, 0x95, 0xAC,
+	0x76, 0x09, 0x35, 0x53, 0x11, 0x00, 0x4D, 0xDD, 0x56, 0x02, 0xBD, 0x09,
+	0x76, 0x57, 0xE1, 0xFA, 0xFA, 0xF4, 0x86, 0x09, 0x28, 0xA4, 0x0D, 0x1C,
+	0x68, 0xE7, 0x68, 0x31, 0xD3, 0xB6, 0x62, 0x9C, 0x75, 0x91, 0xAB, 0xB5,
+	0x6F, 0x1A, 0x75, 0xE7, 0x13, 0x2F, 0xF1, 0xB1, 0x14, 0xBF, 0x5F, 0x00,
+	0x40, 0xCE, 0x17, 0x6C
+};
+
+typedef HRESULT (WINAPI *SHGETKNOWNFOLDERPATH) (
+  _In_     REFKNOWNFOLDERID rfid,
+  _In_     DWORD            dwFlags,
+  _In_opt_ HANDLE           hToken,
+  _Out_    PWSTR            *ppszPath
+);
 
 /* Windows dialog class */
 #define WINDOWS_DIALOG_CLASS L"#32770"
@@ -691,6 +726,7 @@ void AbortProcessDirect (wchar_t *abortMsg)
 	FREE_DLL (hMsls31);
 	FREE_DLL (hntmartadll);
 	FREE_DLL (hwinscarddll);
+	FREE_DLL (hmsvcrtdll);
 
 	exit (1);
 }
@@ -740,6 +776,7 @@ void AbortProcessSilent (void)
 	FREE_DLL (hMsls31);
 	FREE_DLL (hntmartadll);
 	FREE_DLL (hwinscarddll);
+	FREE_DLL (hmsvcrtdll);
 
 	// Note that this function also causes localcleanup() to be called (see atexit())
 	exit (1);
@@ -2634,6 +2671,7 @@ void InitOSVersionInfo ()
 	CurrentOSMajor = os.dwMajorVersion;
 	CurrentOSMinor = os.dwMinorVersion;
 	CurrentOSServicePack = os.wServicePackMajor;
+	CurrentOSBuildNumber = os.dwBuildNumber;
 
 	if (os.dwPlatformId == VER_PLATFORM_WIN32_NT && CurrentOSMajor == 5 && CurrentOSMinor == 0)
 		nCurrentOS = WIN_2000;
@@ -2701,6 +2739,9 @@ void InitApp (HINSTANCE hInstance, wchar_t *lpszCommandLine)
 	WNDCLASSW wc;
 	char langId[6];	
 	InitCommonControlsPtr InitCommonControlsFn = NULL;	
+	wchar_t modPath[MAX_PATH];
+
+	GetModuleFileNameW (NULL, modPath, ARRAYSIZE (modPath));
 
    /* remove current directory from dll search path */
    SetDllDirectoryFn = (SetDllDirectoryPtr) GetProcAddress (GetModuleHandle(L"kernel32.dll"), "SetDllDirectoryW");
@@ -2720,6 +2761,7 @@ void InitApp (HINSTANCE hInstance, wchar_t *lpszCommandLine)
 
 	InitGlobalLocks ();
 
+	LoadSystemDll (L"msvcrt.dll", &hmsvcrtdll, TRUE, SRC_POS);
 	LoadSystemDll (L"ntmarta.dll", &hntmartadll, TRUE, SRC_POS);
 	LoadSystemDll (L"MPR.DLL", &hmprdll, TRUE, SRC_POS);
 #ifdef SETUP
@@ -2770,22 +2812,24 @@ void InitApp (HINSTANCE hInstance, wchar_t *lpszCommandLine)
 		LoadSystemDll (L"vsstrace.dll", &hvsstracedll, TRUE, SRC_POS);
 		LoadSystemDll (L"vssapi.dll", &vssapidll, TRUE, SRC_POS);
 		LoadSystemDll (L"spp.dll", &hsppdll, TRUE, SRC_POS);
+	}
+#endif
 
-		if (IsOSAtLeast (WIN_7))
-		{
-			LoadSystemDll (L"CryptSP.dll", &hCryptSpDll, TRUE, SRC_POS);
+	LoadSystemDll (L"crypt32.dll", &hcrypt32dll, TRUE, SRC_POS);
+	
+	if (IsOSAtLeast (WIN_7))
+	{
+		LoadSystemDll (L"CryptSP.dll", &hCryptSpDll, TRUE, SRC_POS);
 
-			LoadSystemDll (L"cfgmgr32.dll", &hcfgmgr32dll, TRUE, SRC_POS);
-			LoadSystemDll (L"devobj.dll", &hdevobjdll, TRUE, SRC_POS);
-			LoadSystemDll (L"powrprof.dll", &hpowrprofdll, TRUE, SRC_POS);
+		LoadSystemDll (L"cfgmgr32.dll", &hcfgmgr32dll, TRUE, SRC_POS);
+		LoadSystemDll (L"devobj.dll", &hdevobjdll, TRUE, SRC_POS);
+		LoadSystemDll (L"powrprof.dll", &hpowrprofdll, TRUE, SRC_POS);
 
-			LoadSystemDll (L"crypt32.dll", &hcrypt32dll, TRUE, SRC_POS);
-
-			LoadSystemDll (L"bcrypt.dll", &hbcryptdll, TRUE, SRC_POS);
-			LoadSystemDll (L"bcryptprimitives.dll", &hbcryptprimitivesdll, TRUE, SRC_POS);								
-		}
+		LoadSystemDll (L"bcrypt.dll", &hbcryptdll, TRUE, SRC_POS);
+		LoadSystemDll (L"bcryptprimitives.dll", &hbcryptprimitivesdll, TRUE, SRC_POS);								
 	}	
-#else
+
+#ifndef SETUP
 	LoadSystemDll (L"WINSCARD.DLL", &hwinscarddll, TRUE, SRC_POS);
 #endif
 
@@ -2805,6 +2849,10 @@ void InitApp (HINSTANCE hInstance, wchar_t *lpszCommandLine)
 
 	LoadSystemDll (L"Riched20.dll", &hRichEditDll, FALSE, SRC_POS);
 
+#if !defined(SETUP)
+	if (!VerifyModuleSignature (modPath))
+		AbortProcess ("DIST_PACKAGE_CORRUPTED");
+#endif
 	// Get SetupAPI functions pointers
 	SetupCloseInfFileFn = (SetupCloseInfFilePtr) GetProcAddress (hSetupDll, "SetupCloseInfFile");
 	SetupDiOpenClassRegKeyFn = (SetupDiOpenClassRegKeyPtr) GetProcAddress (hSetupDll, "SetupDiOpenClassRegKey");
@@ -2876,7 +2924,6 @@ void InitApp (HINSTANCE hInstance, wchar_t *lpszCommandLine)
 	// A new instance of the application must be created with elevated privileges.
 	if (IsNonInstallMode () && !IsAdmin () && IsUacSupported ())
 	{
-		wchar_t modPath[MAX_PATH];
 
 		if (wcsstr (lpszCommandLine, L"/q UAC ") == lpszCommandLine)
 		{
@@ -2884,7 +2931,6 @@ void InitApp (HINSTANCE hInstance, wchar_t *lpszCommandLine)
 			exit (1);
 		}
 
-		GetModuleFileNameW (NULL, modPath, ARRAYSIZE (modPath));
 
 		if (LaunchElevatedProcess (NULL, modPath, lpszCommandLine))
 			exit (0);
@@ -3027,6 +3073,7 @@ void InitApp (HINSTANCE hInstance, wchar_t *lpszCommandLine)
 		FREE_DLL (hMsls31);
 		FREE_DLL (hntmartadll);
 		FREE_DLL (hwinscarddll);
+		FREE_DLL (hmsvcrtdll);
 		exit (1);
 	}
 #endif
@@ -3071,6 +3118,7 @@ void FinalizeApp (void)
 	FREE_DLL (hMsls31);
 	FREE_DLL (hntmartadll);
 	FREE_DLL (hwinscarddll);
+	FREE_DLL (hmsvcrtdll);
 }
 
 void InitHelpFileName (void)
@@ -13045,7 +13093,7 @@ BOOL GetFreeDriveLetter(WCHAR* pCh) {
 	return FALSE;
 }
 
-BOOL RaisePrivileges(void)
+BOOL SetPrivilege(LPTSTR szPrivilegeName, BOOL bEnable)
 {
 	HANDLE hToken;
 	TOKEN_PRIVILEGES tkp;
@@ -13056,15 +13104,13 @@ BOOL RaisePrivileges(void)
 		TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
 		&hToken))
 	{
-		if (LookupPrivilegeValue(NULL, SE_SYSTEM_ENVIRONMENT_NAME,
+		if (LookupPrivilegeValue(NULL, szPrivilegeName,
 				&tkp.Privileges[0].Luid))
 		{
-			DWORD len;
-			
 			tkp.PrivilegeCount = 1;
-			tkp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+			tkp.Privileges[0].Attributes = bEnable? SE_PRIVILEGE_ENABLED : SE_PRIVILEGE_REMOVED;
 			
-			bRet = AdjustTokenPrivileges(hToken, FALSE, &tkp, 0, NULL, &len);
+			bRet = AdjustTokenPrivileges(hToken, FALSE, &tkp, 0, NULL, NULL);
 			if (!bRet)
 				dwLastError = GetLastError ();
 		}
@@ -13364,3 +13410,259 @@ INT_PTR SecureDesktopDialogBoxParam(
 }
 
 #endif
+
+static BOOL InitializeWintrust()
+{
+	if (!hWinTrustLib)
+	{
+		wchar_t szPath[MAX_PATH] = {0};
+
+		if (GetSystemDirectory(szPath, MAX_PATH))
+			StringCchCatW (szPath, MAX_PATH, L"\\Wintrust.dll");
+		else
+			StringCchCopyW (szPath, MAX_PATH, L"C:\\Windows\\System32\\Wintrust.dll");
+
+		hWinTrustLib = LoadLibrary (szPath);
+		if (hWinTrustLib)
+		{
+			WinVerifyTrustFn = (WINVERIFYTRUST) GetProcAddress (hWinTrustLib, "WinVerifyTrust");
+			WTHelperProvDataFromStateDataFn = (WTHELPERPROVDATAFROMSTATEDATA) GetProcAddress (hWinTrustLib, "WTHelperProvDataFromStateData");
+			WTHelperGetProvSignerFromChainFn = (WTHELPERGETPROVSIGNERFROMCHAIN) GetProcAddress (hWinTrustLib, "WTHelperGetProvSignerFromChain");
+			WTHelperGetProvCertFromChainFn = (WTHELPERGETPROVCERTFROMCHAIN) GetProcAddress (hWinTrustLib, "WTHelperGetProvCertFromChain");
+
+			if (	!WinVerifyTrustFn 
+				||	!WTHelperProvDataFromStateDataFn 
+				||	!WTHelperGetProvSignerFromChainFn 
+				||	!WTHelperGetProvCertFromChainFn)
+			{
+				FreeLibrary (hWinTrustLib);
+				hWinTrustLib = NULL;
+			}
+
+		}
+	}
+
+	if (hWinTrustLib)
+		return TRUE;
+	else
+		return FALSE;
+}
+
+static void FinalizeWintrust()
+{
+	if (hWinTrustLib)
+	{
+		FreeLibrary (hWinTrustLib);
+		hWinTrustLib = NULL;
+	}
+}
+
+BOOL VerifyModuleSignature (const wchar_t* path)
+{
+#ifdef NDEBUG
+	BOOL bResult = FALSE;
+	HRESULT hResult;
+	GUID gActionID = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+	WINTRUST_FILE_INFO  fileInfo = {0};
+	WINTRUST_DATA      WVTData = {0};
+	wchar_t filePath [TC_MAX_PATH + 1024];
+
+	// Strip quotation marks (if any)
+	if (path [0] == L'"')
+	{
+		StringCbCopyW (filePath, sizeof(filePath), path + 1);
+	}
+	else
+	{
+		StringCbCopyW (filePath, sizeof(filePath), path);
+	}
+
+	// Strip quotation marks (if any)
+	if (filePath [wcslen (filePath) - 1] == L'"')
+		filePath [wcslen (filePath) - 1] = 0;
+
+	if (!InitializeWintrust ())
+		return FALSE;
+
+	fileInfo.cbStruct = sizeof(WINTRUST_FILE_INFO);
+	fileInfo.pcwszFilePath = filePath;
+	fileInfo.hFile = NULL;
+
+	WVTData.cbStruct            = sizeof(WINTRUST_DATA);
+	WVTData.dwUIChoice          = WTD_UI_NONE;
+	WVTData.fdwRevocationChecks = WTD_REVOKE_NONE;
+	WVTData.dwUnionChoice       = WTD_CHOICE_FILE;
+	WVTData.pFile               = &fileInfo;
+	WVTData.dwStateAction       = WTD_STATEACTION_VERIFY;
+	WVTData.dwProvFlags         = WTD_REVOCATION_CHECK_NONE | WTD_CACHE_ONLY_URL_RETRIEVAL;
+
+	hResult = WinVerifyTrustFn(0, &gActionID, &WVTData);
+	if (SUCCEEDED (hResult))
+	{
+		PCRYPT_PROVIDER_DATA pProviderData = WTHelperProvDataFromStateDataFn (WVTData.hWVTStateData);
+		if (pProviderData)
+		{
+			PCRYPT_PROVIDER_SGNR pProviderSigner = WTHelperGetProvSignerFromChainFn (pProviderData, 0, FALSE, 0);
+			if (pProviderSigner)
+			{
+				PCRYPT_PROVIDER_CERT pProviderCert = WTHelperGetProvCertFromChainFn (pProviderSigner, 0);
+				if (pProviderCert && (pProviderCert->pCert))
+				{
+					BYTE hashVal[64];
+					sha512 (hashVal, pProviderCert->pCert->pbCertEncoded, pProviderCert->pCert->cbCertEncoded);
+
+					if (0 ==  memcmp (hashVal, gpbSha1CodeSignCertFingerprint, 64))
+					{
+						bResult = TRUE;
+					}
+				}
+			}
+		}
+	}
+
+	WVTData.dwUIChoice = WTD_UI_NONE;
+	WVTData.dwStateAction = WTD_STATEACTION_CLOSE;
+	WinVerifyTrustFn(0, &gActionID, &WVTData);
+
+	FinalizeWintrust ();
+
+	return bResult;
+#else
+	return TRUE;
+#endif
+}
+
+void GetInstallationPath (HWND hwndDlg, wchar_t* szInstallPath, DWORD cchSize, BOOL* pbInstallPathDetermined)
+{
+	HKEY hkey;
+	BOOL bInstallPathDetermined = FALSE;
+	wchar_t path[MAX_PATH+20];
+	ITEMIDLIST *itemList;
+
+	memset (szInstallPath, 0, cchSize * sizeof (wchar_t));
+
+	// Determine if VeraCrypt is already installed and try to determine its "Program Files" location
+	if (RegOpenKeyEx (HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\VeraCrypt", 0, KEY_READ | KEY_WOW64_32KEY, &hkey) == ERROR_SUCCESS)
+	{
+		/* Default 'UninstallString' registry strings written by VeraCrypt:
+		------------------------------------------------------------------------------------
+		5.0+	"C:\Program Files\VeraCrypt\VeraCrypt Setup.exe" /u
+		*/
+
+		wchar_t rv[MAX_PATH*4];
+		DWORD size = sizeof (rv);
+		if (RegQueryValueEx (hkey, L"UninstallString", 0, 0, (LPBYTE) &rv, &size) == ERROR_SUCCESS && wcsrchr (rv, L'/'))
+		{
+			size_t len = 0;
+
+			// Cut and paste the location (path) where VeraCrypt is installed to InstallationPath
+			if (rv[0] == L'"')
+			{
+				len = wcsrchr (rv, L'/') - rv - 2;
+				StringCchCopyNW (szInstallPath, cchSize, rv + 1, len);
+				szInstallPath [len] = 0;
+				bInstallPathDetermined = TRUE;
+
+				if (szInstallPath [wcslen (szInstallPath) - 1] != L'\\')
+				{
+					len = wcsrchr (szInstallPath, L'\\') - szInstallPath;
+					szInstallPath [len] = 0;
+				}
+			}
+
+		}
+		RegCloseKey (hkey);
+	}
+
+	if (!bInstallPathDetermined)
+	{
+		/* VeraCrypt is not installed or it wasn't possible to determine where it is installed. */
+
+		// Default "Program Files" path.
+		SHGetSpecialFolderLocation (hwndDlg, CSIDL_PROGRAM_FILES, &itemList);
+		SHGetPathFromIDList (itemList, path);
+
+		if (Is64BitOs())
+		{
+			// Use a unified default installation path (registry redirection of %ProgramFiles% does not work if the installation path is user-selectable)
+			wstring s = path;
+			size_t p = s.find (L" (x86)");
+			if (p != wstring::npos)
+			{
+				s = s.substr (0, p);
+				if (_waccess (s.c_str(), 0) != -1)
+					StringCbCopyW (path, sizeof (path), s.c_str());
+			}
+		}
+
+		StringCbCatW (path, sizeof(path), L"\\VeraCrypt\\");
+		StringCbCopyW (szInstallPath, cchSize, path);
+	}
+
+	// Make sure the path ends with a backslash
+	if (szInstallPath [wcslen (szInstallPath) - 1] != L'\\')
+	{
+		StringCbCatW (szInstallPath, cchSize, L"\\");
+	}
+
+	if (pbInstallPathDetermined)
+		*pbInstallPathDetermined = bInstallPathDetermined;
+}
+
+BOOL GetSetupconfigLocation (wchar_t* path, DWORD cchSize)
+{
+	wchar_t szShell32Path[MAX_PATH] = {0};
+	HMODULE hShell32 = NULL;
+	BOOL bResult = FALSE;
+
+	path[0] = 0;
+
+	if (GetSystemDirectory(szShell32Path, MAX_PATH))
+		StringCchCatW (szShell32Path, MAX_PATH, L"\\Shell32.dll");
+	else
+		StringCchCopyW (szShell32Path, MAX_PATH, L"C:\\Windows\\System32\\Shell32.dll");
+
+	hShell32 = LoadLibrary (szShell32Path);
+	if (hShell32)
+	{
+		SHGETKNOWNFOLDERPATH SHGetKnownFolderPathFn = (SHGETKNOWNFOLDERPATH) GetProcAddress (hShell32, "SHGetKnownFolderPath");
+		if (SHGetKnownFolderPathFn)
+		{
+			wchar_t* pszUsersPath = NULL;
+			if (S_OK == SHGetKnownFolderPathFn (FOLDERID_UserProfiles, 0, NULL, &pszUsersPath))
+			{
+				StringCchPrintfW (path, cchSize, L"%s\\Default\\AppData\\Local\\Microsoft\\Windows\\WSUS\\", pszUsersPath);
+				CoTaskMemFree (pszUsersPath);
+				bResult = TRUE;
+			}
+		}
+		FreeLibrary (hShell32);
+	}
+
+	if (!bResult && CurrentOSMajor >= 10)
+	{
+		StringCchPrintfW (path, cchSize, L"%c:\\Users\\Default\\AppData\\Local\\Microsoft\\Windows\\WSUS\\", szShell32Path[0]);					
+		bResult = TRUE;
+	}
+
+	return bResult;
+}
+
+BOOL BufferHasPattern (const unsigned char* buffer, size_t bufferLen, const void* pattern, size_t patternLen)
+{
+	BOOL bRet = FALSE;
+	if (patternLen <= bufferLen)
+	{
+		size_t i;
+		for (i = 0; i <= (bufferLen - patternLen); ++i)
+		{
+			if (memcmp (&buffer[i], pattern, patternLen) == 0)
+			{
+				bRet = TRUE;
+				break;
+			}
+		}
+	}
+
+	return bRet;
+}

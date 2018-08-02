@@ -387,44 +387,6 @@ void SearchAndDeleteRegistrySubString (HKEY hKey, const wchar_t *subKey, const w
 	}
 }
 
-/* Set the given privilege of the current process */
-BOOL SetPrivilege(LPTSTR szPrivilegeName, BOOL bEnable)
-{
-	TOKEN_PRIVILEGES tp;
-	LUID luid;
-	HANDLE hProcessToken;
-	BOOL bStatus = FALSE;
-
-	if ( OpenProcessToken(GetCurrentProcess(),
-			TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
-			&hProcessToken) )
-	{
-		if ( LookupPrivilegeValue(
-				NULL,
-				szPrivilegeName,
-				&luid ) )
-		{
-
-			tp.PrivilegeCount = 1;
-			tp.Privileges[0].Luid = luid;
-			tp.Privileges[0].Attributes = bEnable? SE_PRIVILEGE_ENABLED : SE_PRIVILEGE_REMOVED;
-
-			// Enable the privilege
-			bStatus = AdjustTokenPrivileges(
-				hProcessToken,
-				FALSE,
-				&tp,
-				sizeof(TOKEN_PRIVILEGES),
-				(PTOKEN_PRIVILEGES) NULL,
-				(PDWORD) NULL);
-		}
-
-		CloseHandle(hProcessToken);
-	}
-
-	return bStatus;
-}
-
 /*
  * Creates a VT_LPWSTR propvariant.
  * we use our own implementation to use SHStrDupW function pointer
@@ -685,18 +647,6 @@ BOOL DoFilesInstall (HWND hwndDlg, wchar_t *szDestDir)
 				continue;	// Destination = target
 		}
 
-		// skip files that don't apply to the current architecture
-		if (	(Is64BitOs () && (wcscmp (szFiles[i], L"AVeraCrypt-x64.exe") == 0))
-			|| (Is64BitOs () && (wcscmp (szFiles[i], L"AVeraCryptExpander-x64.exe") == 0))
-			|| (Is64BitOs () && (wcscmp (szFiles[i], L"AVeraCrypt Format-x64.exe") == 0))
-			||	(!Is64BitOs () && (wcscmp (szFiles[i], L"AVeraCrypt-x86.exe") == 0))
-			||	(!Is64BitOs () && (wcscmp (szFiles[i], L"AVeraCryptExpander-x86.exe") == 0))
-			||	(!Is64BitOs () && (wcscmp (szFiles[i], L"AVeraCrypt Format-x86.exe") == 0))
-			)
-		{
-			continue;
-		}
-
 		if ((*szFiles[i] == L'A') || (*szFiles[i] == L'X'))
 			StringCbCopyW (szDir, sizeof(szDir), szDestDir);
 		else if (*szFiles[i] == L'D')
@@ -754,9 +704,15 @@ BOOL DoFilesInstall (HWND hwndDlg, wchar_t *szDestDir)
 				curFileName [wcslen (szFiles[i]) - 1] = 0;
 
 				if (Is64BitOs ()
-					&& wcscmp (szFiles[i], L"Dveracrypt.sys") == 0)
+					&& ((wcscmp (szFiles[i], L"Dveracrypt.sys") == 0) || (wcscmp (szFiles[i], L"Averacrypt.sys") == 0)))
 				{
 					StringCbCopyNW (curFileName, sizeof(curFileName), FILENAME_64BIT_DRIVER, sizeof (FILENAME_64BIT_DRIVER));
+				}
+
+				if (Is64BitOs ()
+					&& wcscmp (szFiles[i], L"Averacrypt.cat") == 0)
+				{
+					StringCbCopyNW (curFileName, sizeof(curFileName), L"veracrypt-x64.cat", sizeof (L"veracrypt-x64.cat"));
 				}
 
 				if (Is64BitOs ()
@@ -766,33 +722,15 @@ BOOL DoFilesInstall (HWND hwndDlg, wchar_t *szDestDir)
 				}
 
 				if (Is64BitOs ()
-					&& wcscmp (szFiles[i], L"AVeraCrypt-x86.exe") == 0)
-				{
-					StringCbCopyNW (curFileName, sizeof(curFileName), L"VeraCrypt.exe", sizeof (L"VeraCrypt.exe"));
-				}
-
-				if (Is64BitOs ()
 					&& wcscmp (szFiles[i], L"AVeraCryptExpander.exe") == 0)
 				{
 					StringCbCopyNW (curFileName, sizeof(curFileName), L"VeraCryptExpander-x64.exe", sizeof (L"VeraCryptExpander-x64.exe"));
 				}
 
 				if (Is64BitOs ()
-					&& wcscmp (szFiles[i], L"AVeraCryptExpander-x86.exe") == 0)
-				{
-					StringCbCopyNW (curFileName, sizeof(curFileName), L"VeraCryptExpander.exe", sizeof (L"VeraCryptExpander.exe"));
-				}
-
-				if (Is64BitOs ()
 					&& wcscmp (szFiles[i], L"AVeraCrypt Format.exe") == 0)
 				{
 					StringCbCopyNW (curFileName, sizeof(curFileName), L"VeraCrypt Format-x64.exe", sizeof (L"VeraCrypt Format-x64.exe"));
-				}
-
-				if (Is64BitOs ()
-					&& wcscmp (szFiles[i], L"AVeraCrypt Format-x86.exe") == 0)
-				{
-					StringCbCopyNW (curFileName, sizeof(curFileName), L"VeraCrypt Format.exe", sizeof (L"VeraCrypt Format.exe"));
 				}
 
 				if (!bDevm)
@@ -1050,6 +988,12 @@ err:
 			while (FindNextFile(h, &f) != 0);
 
 			FindClose (h);
+		}
+		
+		// remvove legacy files that are not needed anymore
+		for (i = 0; i < sizeof (szLegacyFiles) / sizeof (szLegacyFiles[0]); i++)
+		{
+			StatDeleteFile (szLegacyFiles [i], TRUE);
 		}
 
 		SetCurrentDirectory (SetupFilesDir);
@@ -2313,45 +2257,9 @@ void DoInstall (void *arg)
 
 void SetInstallationPath (HWND hwndDlg)
 {
-	HKEY hkey;
 	BOOL bInstallPathDetermined = FALSE;
-	wchar_t path[MAX_PATH+20];
-	ITEMIDLIST *itemList;
-
-	memset (InstallationPath, 0, sizeof (InstallationPath));
-
-	// Determine if VeraCrypt is already installed and try to determine its "Program Files" location
-	if (RegOpenKeyEx (HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\VeraCrypt", 0, KEY_READ | KEY_WOW64_32KEY, &hkey) == ERROR_SUCCESS)
-	{
-		/* Default 'UninstallString' registry strings written by VeraCrypt:
-		------------------------------------------------------------------------------------
-		5.0+	"C:\Program Files\VeraCrypt\VeraCrypt Setup.exe" /u
-		*/
-
-		wchar_t rv[MAX_PATH*4];
-		DWORD size = sizeof (rv);
-		if (RegQueryValueEx (hkey, L"UninstallString", 0, 0, (LPBYTE) &rv, &size) == ERROR_SUCCESS && wcsrchr (rv, L'/'))
-		{
-			size_t len = 0;
-
-			// Cut and paste the location (path) where VeraCrypt is installed to InstallationPath
-			if (rv[0] == L'"')
-			{
-				len = wcsrchr (rv, L'/') - rv - 2;
-				StringCchCopyNW (InstallationPath, ARRAYSIZE(InstallationPath), rv + 1, len);
-				InstallationPath [len] = 0;
-				bInstallPathDetermined = TRUE;
-
-				if (InstallationPath [wcslen (InstallationPath) - 1] != L'\\')
-				{
-					len = wcsrchr (InstallationPath, L'\\') - InstallationPath;
-					InstallationPath [len] = 0;
-				}
-			}
-
-		}
-		RegCloseKey (hkey);
-	}
+	
+	GetInstallationPath (hwndDlg, InstallationPath, ARRAYSIZE (InstallationPath), &bInstallPathDetermined);
 
 	if (bInstallPathDetermined)
 	{
@@ -2366,36 +2274,6 @@ void SetInstallationPath (HWND hwndDlg)
 			if (!IsNonInstallMode() && !bDevm)
 				bChangeMode = TRUE;
 		}
-	}
-	else
-	{
-		/* VeraCrypt is not installed or it wasn't possible to determine where it is installed. */
-
-		// Default "Program Files" path.
-		SHGetSpecialFolderLocation (hwndDlg, CSIDL_PROGRAM_FILES, &itemList);
-		SHGetPathFromIDList (itemList, path);
-
-		if (Is64BitOs())
-		{
-			// Use a unified default installation path (registry redirection of %ProgramFiles% does not work if the installation path is user-selectable)
-			wstring s = path;
-			size_t p = s.find (L" (x86)");
-			if (p != wstring::npos)
-			{
-				s = s.substr (0, p);
-				if (_waccess (s.c_str(), 0) != -1)
-					StringCbCopyW (path, sizeof (path), s.c_str());
-			}
-		}
-
-		StringCbCatW (path, sizeof(path), L"\\VeraCrypt\\");
-		StringCbCopyW (InstallationPath, sizeof(InstallationPath), path);
-	}
-
-	// Make sure the path ends with a backslash
-	if (InstallationPath [wcslen (InstallationPath) - 1] != L'\\')
-	{
-		StringCbCatW (InstallationPath, sizeof(InstallationPath), L"\\");
 	}
 }
 
@@ -2571,11 +2449,22 @@ int WINAPI wWinMain (HINSTANCE hInstance, HINSTANCE hPrevInstance, wchar_t *lpsz
 #ifndef PORTABLE
 		SetInstallationPath (NULL);
 #endif
-		if (!bUninstall)
+		if (bUninstall)
+		{
+			wchar_t path [TC_MAX_PATH];
+
+			GetModuleFileName (NULL, path, ARRAYSIZE (path));
+			if (!VerifyModuleSignature (path))
+			{
+				Error ("DIST_PACKAGE_CORRUPTED", NULL);
+				exit (1);
+			}
+		}
+		else
 		{
 			if (IsSelfExtractingPackage())
 			{
-				if (!VerifyPackageIntegrity())
+				if (!VerifySelfPackageIntegrity())
 				{
 					// Package corrupted
 					exit (1);

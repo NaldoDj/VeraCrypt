@@ -1,6 +1,6 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <VeraCrypt>
-  <localization prog-version="1.22">
+  <localization prog-version= "1.23-BETA2">
     <language langid="pl" name="Polski" en-name="Polish" version="1.0.0" translators="Mirek Druchowicz, Janusz Zamecki, Sobiesław Antolak, Begina Felicysym" />
     <font lang="pl" class="normal" size="11" face="default" />
     <font lang="pl" class="bold" size="13" face="Arial" />
@@ -1419,6 +1419,8 @@
     <entry lang="pl" key="AFTER_UPGRADE_RESCUE_DISK">Zdecydowanie zaleca się utworzenie nowej płyty ratunkowej VeraCrypt (która zawierać będzie nową wersję programu rozruchowego VeraCrypt) poprzez wybranie 'System' > 'Utwórz płytę ratunkową'.\nCzy chcesz to teraz zrobić?</entry>
     <entry lang="pl" key="IDC_ALLOW_TRIM_NONSYS_SSD">Zezwalaj na komendę TRIM dla bezsystemowej partycji/napędu SSD</entry>
     <entry lang="pl" key="IDC_BLOCK_SYSENC_TRIM">Blokuj komendę TRIM na systemowej partycji/napędzie</entry>
+    <entry lang="pl" key="WINDOWS_EFI_BOOT_LOADER_MISSING">BŁĄD: Nie można zlokalizować programu rozruchowego EFI systemu Windows na dysku. Operacja zostanie przerwana.</entry>
+    <entry lang="pl" key="SYSENC_EFI_UNSUPPORTED_SECUREBOOT">Obecnie nie jest możliwe szyfrowanie systemu, gdy włączona jest funkcja SecureBoot, a niestandardowe klucze VeraCrypt nie zostały załadowane do oprogramowania sprzętowego urządzenia. Funkcja SecureBoot musi być wyłączona w konfiguracji BIOS-u, aby umożliwić kontynuowanie szyfrowania systemu.</entry>
   </localization>
   <xs:schema attributeFormDefault="unqualified" elementFormDefault="qualified" xmlns:xs="http://www.w3.org/2001/XMLSchema">
     <xs:element name="VeraCrypt">
