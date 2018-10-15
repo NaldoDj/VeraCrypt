@@ -537,6 +537,21 @@ static void InitMainDialog (HWND hwndDlg)
 
 		SendMessage (GetDlgItem (hwndDlg, IDC_NO_HISTORY), BM_SETCHECK, bHistory ? BST_UNCHECKED : BST_CHECKED, 0);
 		EnableDisableButtons (hwndDlg);
+
+		// Ensure bottom buttons are visible if the user sets a large font size
+		RECT mainRectScreen, boxRectScreen;
+		ULONG mainHeigth, mainWidth, correctHeigth;
+		GetWindowRect (hwndDlg, &mainRectScreen);
+		GetWindowRect (GetDlgItem (hwndDlg, IDC_LOWER_BOX), &boxRectScreen);
+
+		mainHeigth = mainRectScreen.bottom - mainRectScreen.top;
+		mainWidth = mainRectScreen.right - mainRectScreen.left;
+		correctHeigth =  boxRectScreen.bottom - mainRectScreen.top + CompensateYDPI (5);
+
+		if (mainHeigth < correctHeigth)
+		{
+			SetWindowPos (hwndDlg, NULL, 0, 0, mainWidth, correctHeigth , SWP_NOACTIVATE | SWP_NOZORDER  | SWP_NOMOVE);
+		}
 	}
 }
 
@@ -2169,9 +2184,9 @@ BOOL CALLBACK PasswordChangeDlgProc (HWND hwndDlg, UINT msg, WPARAM wParam, LPAR
 			SetWindowTextW (hwndDlg, GetString ("IDD_PASSWORDCHANGE_DLG"));
 			LocalizeDialog (hwndDlg, "IDD_PASSWORDCHANGE_DLG");
 
-			SendMessage (GetDlgItem (hwndDlg, IDC_OLD_PASSWORD), EM_LIMITTEXT, MAX_PASSWORD, 0);
-			SendMessage (GetDlgItem (hwndDlg, IDC_PASSWORD), EM_LIMITTEXT, MAX_PASSWORD, 0);
-			SendMessage (GetDlgItem (hwndDlg, IDC_VERIFY), EM_LIMITTEXT, MAX_PASSWORD, 0);
+			ToNormalPwdField (hwndDlg, IDC_OLD_PASSWORD);
+			ToNormalPwdField (hwndDlg, IDC_PASSWORD);
+			ToNormalPwdField (hwndDlg, IDC_VERIFY);
 			SendMessage (GetDlgItem (hwndDlg, IDC_OLD_PIM), EM_LIMITTEXT, MAX_PIM, 0);
 			SendMessage (GetDlgItem (hwndDlg, IDC_PIM), EM_LIMITTEXT, MAX_PIM, 0);
 			EnableWindow (GetDlgItem (hwndDlg, IDOK), FALSE);
@@ -2884,7 +2899,7 @@ BOOL CALLBACK PasswordDlgProc (HWND hwndDlg, UINT msg, WPARAM wParam, LPARAM lPa
 			/* make autodetection the default unless a specific PRF was specified in the command line */
 			SendMessage (hComboBox, CB_SETCURSEL, defaultPrfIndex, 0);
 
-			SendMessage (GetDlgItem (hwndDlg, IDC_PASSWORD), EM_LIMITTEXT, MAX_PASSWORD, 0);
+			ToNormalPwdField (hwndDlg, IDC_PASSWORD);
 			SendMessage (GetDlgItem (hwndDlg, IDC_CACHE), BM_SETCHECK, bCacheInDriver ? BST_CHECKED:BST_UNCHECKED, 0);
 			SendMessage (GetDlgItem (hwndDlg, IDC_PIM), EM_LIMITTEXT, MAX_PIM, 0);
 
@@ -3575,7 +3590,7 @@ BOOL CALLBACK MountOptionsDlgProc (HWND hwndDlg, UINT msg, WPARAM wParam, LPARAM
 
 			SetCheckBox (hwndDlg, IDC_KEYFILES_ENABLE_HIDVOL_PROT, hidVolProtKeyFilesParam.EnableKeyFiles);
 
-			SendDlgItemMessage (hwndDlg, IDC_PASSWORD_PROT_HIDVOL, EM_LIMITTEXT, MAX_PASSWORD, 0);
+			ToNormalPwdField (hwndDlg, IDC_PASSWORD_PROT_HIDVOL);
 			SendDlgItemMessage (hwndDlg, IDC_PIM, EM_LIMITTEXT, MAX_PIM, 0);
 
 			if (mountOptions->ProtectedHidVolPassword.Length > 0)
@@ -4634,7 +4649,11 @@ BOOL CALLBACK TravelerDlgProc (HWND hwndDlg, UINT msg, WPARAM wParam, LPARAM lPa
 				}
 				StringCbPrintfW (srcPath, sizeof(srcPath), L"%s\\Languages\\Language.%hs.xml", appDir, GetPreferredLangId ());
 				StringCbPrintfW (dstPath, sizeof(dstPath), L"%s\\VeraCrypt\\Languages\\Language.%hs.xml", dstDir, GetPreferredLangId ());
-				TCCopyFile (srcPath, dstPath);
+				if (!TCCopyFile (srcPath, dstPath))
+				{
+					handleWin32Error (hwndDlg, SRC_POS);
+					goto stop;
+				}
 			}
 
 			// AutoRun
@@ -6774,6 +6793,12 @@ BOOL CALLBACK MainDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 			{
 				// General preferences
 				LoadSettings (hwndDlg);
+
+				// Save language to XML configuration file if it has been selected in the setup
+				// so that other VeraCrypt programs will pick it up
+				if (bLanguageSetInSetup)
+					SaveSettings (hwndDlg);
+
 
 				// Keyfiles
 				LoadDefaultKeyFilesParam ();
@@ -10618,9 +10643,34 @@ int RestoreVolumeHeader (HWND hwndDlg, const wchar_t *lpszVolume)
 					dgBuffer, sizeof (dgBuffer), &dwResult, NULL);
 
 				if (!bResult)
-					goto error;
+				{
+					DISK_GEOMETRY geo;
+					if (DeviceIoControl (dev, IOCTL_DISK_GET_DRIVE_GEOMETRY, NULL, 0, (LPVOID) &geo, sizeof (geo), &dwResult, NULL))
+					{
+						hostSize = geo.Cylinders.QuadPart * geo.SectorsPerTrack * geo.TracksPerCylinder * geo.BytesPerSector;
 
-				hostSize = ((PDISK_GEOMETRY_EX) dgBuffer)->DiskSize.QuadPart;
+						if (CurrentOSMajor >= 6)
+						{
+							STORAGE_READ_CAPACITY storage = {0};
+
+							storage.Version = sizeof (STORAGE_READ_CAPACITY);
+							storage.Size = sizeof (STORAGE_READ_CAPACITY);
+							if (DeviceIoControl (dev, IOCTL_STORAGE_READ_CAPACITY, NULL, 0, (LPVOID) &storage, sizeof (storage), &dwResult, NULL)
+								&& (dwResult >= sizeof (storage))
+								&& (storage.Size == sizeof (STORAGE_READ_CAPACITY))
+								)
+							{
+								hostSize = storage.DiskLength.QuadPart;
+							}
+						}
+					}
+					else
+					{
+						goto error;
+					}
+				}
+				else
+					hostSize = ((PDISK_GEOMETRY_EX) dgBuffer)->DiskSize.QuadPart;
 			}
 
 			if (hostSize == 0)
@@ -10852,6 +10902,16 @@ static BOOL CALLBACK PerformanceSettingsDlgProc (HWND hwndDlg, UINT msg, WPARAM 
 			CheckDlgButton (hwndDlg, IDC_ENABLE_HARDWARE_ENCRYPTION, (driverConfig & TC_DRIVER_CONFIG_DISABLE_HARDWARE_ENCRYPTION) ? BST_UNCHECKED : BST_CHECKED);
 			CheckDlgButton (hwndDlg, IDC_ENABLE_EXTENDED_IOCTL_SUPPORT, (driverConfig & TC_DRIVER_CONFIG_ENABLE_EXTENDED_IOCTL) ? BST_CHECKED : BST_UNCHECKED);
 			CheckDlgButton (hwndDlg, IDC_ALLOW_TRIM_NONSYS_SSD, (driverConfig & VC_DRIVER_CONFIG_ALLOW_NONSYS_TRIM) ? BST_CHECKED : BST_UNCHECKED);
+			// checkbox for Windows Defragmenter only usuable starting from Windows 8.1
+			// on previous versions, we can not control Windows defragmenter so 
+			// this settings is always checked.
+			if (IsOSAtLeast (WIN_8_1))
+				CheckDlgButton (hwndDlg, IDC_ALLOW_WINDOWS_DEFRAG, (driverConfig & VC_DRIVER_CONFIG_ALLOW_WINDOWS_DEFRAG) ? BST_CHECKED : BST_UNCHECKED);
+			else
+			{
+				CheckDlgButton (hwndDlg, IDC_ALLOW_WINDOWS_DEFRAG,  BST_CHECKED);
+				EnableWindow (GetDlgItem (hwndDlg, IDC_ALLOW_WINDOWS_DEFRAG), FALSE);
+			}
 
 			SYSTEM_INFO sysInfo;
 			GetSystemInfo (&sysInfo);
@@ -10910,6 +10970,7 @@ static BOOL CALLBACK PerformanceSettingsDlgProc (HWND hwndDlg, UINT msg, WPARAM 
 				BOOL disableHW = !IsDlgButtonChecked (hwndDlg, IDC_ENABLE_HARDWARE_ENCRYPTION);
 				BOOL enableExtendedIOCTL = IsDlgButtonChecked (hwndDlg, IDC_ENABLE_EXTENDED_IOCTL_SUPPORT);
 				BOOL allowTrimCommand = IsDlgButtonChecked (hwndDlg, IDC_ALLOW_TRIM_NONSYS_SSD);
+				BOOL allowWindowsDefrag = IsDlgButtonChecked (hwndDlg, IDC_ALLOW_WINDOWS_DEFRAG);
 
 				try
 				{
@@ -10947,6 +11008,8 @@ static BOOL CALLBACK PerformanceSettingsDlgProc (HWND hwndDlg, UINT msg, WPARAM 
 					SetDriverConfigurationFlag (TC_DRIVER_CONFIG_DISABLE_HARDWARE_ENCRYPTION, disableHW);
 					SetDriverConfigurationFlag (TC_DRIVER_CONFIG_ENABLE_EXTENDED_IOCTL, enableExtendedIOCTL);
 					SetDriverConfigurationFlag (VC_DRIVER_CONFIG_ALLOW_NONSYS_TRIM, allowTrimCommand);
+					if (IsOSAtLeast (WIN_8_1))
+						SetDriverConfigurationFlag (VC_DRIVER_CONFIG_ALLOW_WINDOWS_DEFRAG, allowWindowsDefrag);
 
 					DWORD bytesReturned;
 					if (!DeviceIoControl (hDriver, TC_IOCTL_REREAD_DRIVER_CONFIG, NULL, 0, NULL, 0, &bytesReturned, NULL))
@@ -10975,6 +11038,14 @@ static BOOL CALLBACK PerformanceSettingsDlgProc (HWND hwndDlg, UINT msg, WPARAM 
 				{
 					e.Show (hwndDlg);
 				}
+			}
+			return 1;
+
+		case IDC_ALLOW_WINDOWS_DEFRAG:
+			if (IsDlgButtonChecked (hwndDlg, IDC_ALLOW_WINDOWS_DEFRAG)
+				&& AskWarnYesNo ("CONFIRM_ALLOW_WINDOWS_DEFRAG", hwndDlg) == IDNO)
+			{
+				CheckDlgButton (hwndDlg, IDC_ALLOW_WINDOWS_DEFRAG, BST_UNCHECKED);
 			}
 			return 1;
 

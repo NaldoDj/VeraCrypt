@@ -129,6 +129,7 @@ BOOL CacheBootPassword = FALSE;
 BOOL CacheBootPim = FALSE;
 BOOL NonAdminSystemFavoritesAccessDisabled = FALSE;
 BOOL BlockSystemTrimCommand = FALSE;
+BOOL AllowWindowsDefrag = FALSE;
 static size_t EncryptionThreadPoolFreeCpuCountLimit = 0;
 static BOOL SystemFavoriteVolumeDirty = FALSE;
 static BOOL PagingFileCreationPrevented = FALSE;
@@ -285,6 +286,54 @@ BOOL IsAllZeroes (unsigned char* pbData, DWORD dwDataLen)
 			return FALSE;
 		pbData++;
 	}
+	return TRUE;
+}
+
+static wchar_t UpperCaseUnicodeChar (wchar_t c)
+{
+	if (c >= L'a' && c <= L'z')
+		return (c - L'a') + L'A';
+	return c;
+}
+
+static BOOL StringNoCaseCompare (const wchar_t* str1, const wchar_t* str2, size_t len)
+{
+	if (str1 && str2)
+	{
+		while (len)
+		{
+			if (UpperCaseUnicodeChar (*str1) != UpperCaseUnicodeChar (*str2))
+				return FALSE;
+			str1++;
+			str2++;
+			len--;
+		}
+	}
+
+	return TRUE;
+}
+
+static BOOL CheckStringLength (const wchar_t* str, size_t cchSize, size_t minLength, size_t maxLength, size_t* pcchLength)
+{
+	size_t actualLength;
+	for (actualLength = 0; actualLength < cchSize; actualLength++)
+	{
+		if (str[actualLength] == 0)
+			break;
+	}
+
+	if (pcchLength)
+		*pcchLength = actualLength;
+
+	if (actualLength == cchSize)
+		return FALSE;
+
+	if ((minLength != ((size_t) -1)) && (actualLength < minLength))
+		return FALSE;
+
+	if ((maxLength != ((size_t) -1)) && (actualLength > maxLength))
+		return FALSE;
+
 	return TRUE;
 }
 
@@ -1263,8 +1312,10 @@ NTSTATUS ProcessVolumeDeviceControlIrp (PDEVICE_OBJECT DeviceObject, PEXTENSION 
 
 	case IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS:
 		Dump ("ProcessVolumeDeviceControlIrp (IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS)\n");
-		// Vista's filesystem defragmenter fails if IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS does not succeed.
-		if (!(OsMajorVersion == 6 && OsMinorVersion == 0))
+		// Vista's, Windows 8.1 and later filesystem defragmenter fails if IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS does not succeed.
+		if (!(OsMajorVersion == 6 && OsMinorVersion == 0) 
+			&& !(IsOSAtLeast (WIN_8_1) && AllowWindowsDefrag && Extension->bRawDevice)
+			)
 		{
 			Irp->IoStatus.Status = STATUS_INVALID_DEVICE_REQUEST;
 			Irp->IoStatus.Information = 0;
@@ -1272,10 +1323,24 @@ NTSTATUS ProcessVolumeDeviceControlIrp (PDEVICE_OBJECT DeviceObject, PEXTENSION 
 		else if (ValidateIOBufferSize (Irp, sizeof (VOLUME_DISK_EXTENTS), ValidateOutput))
 		{
 			VOLUME_DISK_EXTENTS *extents = (VOLUME_DISK_EXTENTS *) Irp->AssociatedIrp.SystemBuffer;
+			
 
-			// No extent data can be returned as this is not a physical drive.
-			memset (extents, 0, sizeof (*extents));
-			extents->NumberOfDiskExtents = 0;
+			if (IsOSAtLeast (WIN_8_1))
+			{
+				// Windows 10 filesystem defragmenter works only if we report an extent with a real disk number
+				// So in the case of a VeraCrypt disk based volume, we use the disk number
+				// of the underlaying physical disk and we report a single extent 
+				extents->NumberOfDiskExtents = 1;
+				extents->Extents[0].DiskNumber = Extension->DeviceNumber;
+				extents->Extents[0].StartingOffset.QuadPart = Extension->BytesPerSector;
+				extents->Extents[0].ExtentLength.QuadPart = Extension->DiskLength;
+			}
+			else
+			{
+				// Vista: No extent data can be returned as this is not a physical drive.				
+				memset (extents, 0, sizeof (*extents));
+				extents->NumberOfDiskExtents = 0;
+			}
 
 			Irp->IoStatus.Status = STATUS_SUCCESS;
 			Irp->IoStatus.Information = sizeof (*extents);
@@ -1732,6 +1797,18 @@ NTSTATUS ProcessMainDeviceControlIrp (PDEVICE_OBJECT DeviceObject, PEXTENSION Ex
 			if (!ValidateIOBufferSize (Irp, sizeof (OPEN_TEST_STRUCT), ValidateInputOutput))
 				break;
 
+			// check that opentest->wszFileName is a device path that starts with "\\Device\\Harddisk"
+			// 16 is the length of "\\Device\\Harddisk" which is the mi
+			if (	!CheckStringLength (opentest->wszFileName, TC_MAX_PATH, 16, (size_t) -1, NULL)
+				||	(!StringNoCaseCompare (opentest->wszFileName, L"\\Device\\Harddisk", 16))
+				)
+			{
+				Irp->IoStatus.Status = STATUS_INVALID_PARAMETER;
+				Irp->IoStatus.Information = 0;
+				break;
+			}
+
+
 			EnsureNullTerminatedString (opentest->wszFileName, sizeof (opentest->wszFileName));
 			RtlInitUnicodeString (&FullFileName, opentest->wszFileName);
 
@@ -1849,7 +1926,7 @@ NTSTATUS ProcessMainDeviceControlIrp (PDEVICE_OBJECT DeviceObject, PEXTENSION Ex
 								&offset,
 								NULL);
 
-								if (NT_SUCCESS (ntStatus))
+								if (NT_SUCCESS (ntStatus) && (IoStatus.Information >= TC_VOLUME_HEADER_EFFECTIVE_SIZE))
 								{
 									/* compute the ID of this volume: SHA-256 of the effective header */
 									sha256 (opentest->volumeIDs[volumeType], readBuffer, TC_VOLUME_HEADER_EFFECTIVE_SIZE);
@@ -1885,10 +1962,25 @@ NTSTATUS ProcessMainDeviceControlIrp (PDEVICE_OBJECT DeviceObject, PEXTENSION Ex
 			UNICODE_STRING FullFileName;
 			IO_STATUS_BLOCK IoStatus;
 			LARGE_INTEGER offset;
-			byte readBuffer [TC_SECTOR_SIZE_BIOS];
+			size_t devicePathLen = 0;
+			WCHAR* wszPath = NULL;
 
 			if (!ValidateIOBufferSize (Irp, sizeof (GetSystemDriveConfigurationRequest), ValidateInputOutput))
 				break;
+
+			// check that request->DevicePath has the expected format "\\Device\\HarddiskXXX\\Partition0"
+			// 28 is the length of "\\Device\\Harddisk0\\Partition0" which is the minimum
+			// 30 is the length of "\\Device\\Harddisk255\\Partition0" which is the maximum
+			wszPath = request->DevicePath;
+			if (	!CheckStringLength (wszPath, TC_MAX_PATH, 28, 30, &devicePathLen)
+				||	(memcmp (wszPath, L"\\Device\\Harddisk", 16 * sizeof (WCHAR)))
+				||	(memcmp (wszPath + (devicePathLen - 11), L"\\Partition0", 11 * sizeof (WCHAR)))
+				)
+			{
+				Irp->IoStatus.Status = STATUS_INVALID_PARAMETER;
+				Irp->IoStatus.Information = 0;
+				break;
+			}
 
 			EnsureNullTerminatedString (request->DevicePath, sizeof (request->DevicePath));
 			RtlInitUnicodeString (&FullFileName, request->DevicePath);
@@ -1901,68 +1993,88 @@ NTSTATUS ProcessMainDeviceControlIrp (PDEVICE_OBJECT DeviceObject, PEXTENSION Ex
 
 			if (NT_SUCCESS (ntStatus))
 			{
-				// Determine if the first sector contains a portion of the VeraCrypt Boot Loader
-				offset.QuadPart = 0;	// MBR
-
-				ntStatus = ZwReadFile (NtFileHandle,
-					NULL,
-					NULL,
-					NULL,
-					&IoStatus,
-					readBuffer,
-					sizeof(readBuffer),
-					&offset,
-					NULL);
-
-				if (NT_SUCCESS (ntStatus))
+				byte *readBuffer = TCalloc (TC_MAX_VOLUME_SECTOR_SIZE);
+				if (!readBuffer)
 				{
-					size_t i;
-
-					// Check for dynamic drive
-					request->DriveIsDynamic = FALSE;
-
-					if (readBuffer[510] == 0x55 && readBuffer[511] == 0xaa)
-					{
-						int i;
-						for (i = 0; i < 4; ++i)
-						{
-							if (readBuffer[446 + i * 16 + 4] == PARTITION_LDM)
-							{
-								request->DriveIsDynamic = TRUE;
-								break;
-							}
-						}
-					}
-
-					request->BootLoaderVersion = 0;
-					request->Configuration = 0;
-					request->UserConfiguration = 0;
-					request->CustomUserMessage[0] = 0;
-
-					// Search for the string "VeraCrypt"
-					for (i = 0; i < sizeof (readBuffer) - strlen (TC_APP_NAME); ++i)
-					{
-						if (memcmp (readBuffer + i, TC_APP_NAME, strlen (TC_APP_NAME)) == 0)
-						{
-							request->BootLoaderVersion = BE16 (*(uint16 *) (readBuffer + TC_BOOT_SECTOR_VERSION_OFFSET));
-							request->Configuration = readBuffer[TC_BOOT_SECTOR_CONFIG_OFFSET];
-
-							if (request->BootLoaderVersion != 0 && request->BootLoaderVersion <= VERSION_NUM)
-							{
-								request->UserConfiguration = readBuffer[TC_BOOT_SECTOR_USER_CONFIG_OFFSET];
-								memcpy (request->CustomUserMessage, readBuffer + TC_BOOT_SECTOR_USER_MESSAGE_OFFSET, TC_BOOT_SECTOR_USER_MESSAGE_MAX_LENGTH);
-							}
-							break;
-						}
-					}
-
-					Irp->IoStatus.Status = STATUS_SUCCESS;
-					Irp->IoStatus.Information = sizeof (*request);
+					Irp->IoStatus.Status = STATUS_INSUFFICIENT_RESOURCES;
+					Irp->IoStatus.Information = 0;
 				}
 				else
 				{
-					Irp->IoStatus.Status = ntStatus;
-					Irp->IoStatus.Information = 0;
+					// Determine if the first sector contains a portion of the VeraCrypt Boot Loader
+					offset.QuadPart = 0;	// MBR
+
+					ntStatus = ZwReadFile (NtFileHandle,
+						NULL,
+						NULL,
+						NULL,
+						&IoStatus,
+						readBuffer,
+						TC_MAX_VOLUME_SECTOR_SIZE,
+						&offset,
+						NULL);
+
+					if (NT_SUCCESS (ntStatus))
+					{
+						// check that we could read all needed data
+						if (IoStatus.Information >= TC_SECTOR_SIZE_BIOS)
+						{
+							size_t i;
+
+							// Check for dynamic drive
+							request->DriveIsDynamic = FALSE;
+
+							if (readBuffer[510] == 0x55 && readBuffer[511] == 0xaa)
+							{
+								int i;
+								for (i = 0; i < 4; ++i)
+								{
+									if (readBuffer[446 + i * 16 + 4] == PARTITION_LDM)
+									{
+										request->DriveIsDynamic = TRUE;
+										break;
+									}
+								}
+							}
+
+							request->BootLoaderVersion = 0;
+							request->Configuration = 0;
+							request->UserConfiguration = 0;
+							request->CustomUserMessage[0] = 0;
+
+							// Search for the string "VeraCrypt"
+							for (i = 0; i < TC_SECTOR_SIZE_BIOS - strlen (TC_APP_NAME); ++i)
+							{
+								if (memcmp (readBuffer + i, TC_APP_NAME, strlen (TC_APP_NAME)) == 0)
+								{
+									request->BootLoaderVersion = BE16 (*(uint16 *) (readBuffer + TC_BOOT_SECTOR_VERSION_OFFSET));
+									request->Configuration = readBuffer[TC_BOOT_SECTOR_CONFIG_OFFSET];
+
+									if (request->BootLoaderVersion != 0 && request->BootLoaderVersion <= VERSION_NUM)
+									{
+										request->UserConfiguration = readBuffer[TC_BOOT_SECTOR_USER_CONFIG_OFFSET];
+										memcpy (request->CustomUserMessage, readBuffer + TC_BOOT_SECTOR_USER_MESSAGE_OFFSET, TC_BOOT_SECTOR_USER_MESSAGE_MAX_LENGTH);
+									}
+									break;
+								}
+							}
+
+							Irp->IoStatus.Status = STATUS_SUCCESS;
+							Irp->IoStatus.Information = sizeof (*request);
+						}
+						else
+						{
+							Irp->IoStatus.Status = STATUS_INVALID_PARAMETER;
+							Irp->IoStatus.Information = 0;
+						}
+					}
+					else
+					{
+						Irp->IoStatus.Status = ntStatus;
+						Irp->IoStatus.Information = 0;
+					}
+
+					TCfree (readBuffer);
 				}
 
 				ZwClose (NtFileHandle);
@@ -3734,16 +3846,19 @@ NTSTATUS MountDevice (PDEVICE_OBJECT DeviceObject, MOUNT_STRUCT *mount)
 							IO_STATUS_BLOCK ioblock;
 							ULONG labelInfoSize = sizeof(FILE_FS_LABEL_INFORMATION) + (labelEffectiveLen * sizeof(WCHAR));
 							FILE_FS_LABEL_INFORMATION* labelInfo = (FILE_FS_LABEL_INFORMATION*) TCalloc (labelInfoSize);
-							labelInfo->VolumeLabelLength = labelEffectiveLen * sizeof(WCHAR);
-							memcpy (labelInfo->VolumeLabel, mount->wszLabel, labelInfo->VolumeLabelLength);
-
-							if (STATUS_SUCCESS == ZwSetVolumeInformationFile (volumeHandle, &ioblock, labelInfo, labelInfoSize, FileFsLabelInformation))
+							if (labelInfo)
 							{
-								mount->bDriverSetLabel = TRUE;
-								NewExtension->bDriverSetLabel = TRUE;
-							}
+								labelInfo->VolumeLabelLength = labelEffectiveLen * sizeof(WCHAR);
+								memcpy (labelInfo->VolumeLabel, mount->wszLabel, labelInfo->VolumeLabelLength);
 
-							TCfree(labelInfo);
+								if (STATUS_SUCCESS == ZwSetVolumeInformationFile (volumeHandle, &ioblock, labelInfo, labelInfoSize, FileFsLabelInformation))
+								{
+									mount->bDriverSetLabel = TRUE;
+									NewExtension->bDriverSetLabel = TRUE;
+								}
+
+								TCfree(labelInfo);
+							}
 						}
 						__except (EXCEPTION_EXECUTE_HANDLER)
 						{
@@ -4230,6 +4345,7 @@ NTSTATUS ReadRegistryConfigFlags (BOOL driverEntry)
 
 			EnableExtendedIoctlSupport = (flags & TC_DRIVER_CONFIG_ENABLE_EXTENDED_IOCTL)? TRUE : FALSE;
 			AllowTrimCommand = (flags & VC_DRIVER_CONFIG_ALLOW_NONSYS_TRIM)? TRUE : FALSE;
+			AllowWindowsDefrag = (flags & VC_DRIVER_CONFIG_ALLOW_WINDOWS_DEFRAG)? TRUE : FALSE;
 		}
 		else
 			status = STATUS_INVALID_PARAMETER;

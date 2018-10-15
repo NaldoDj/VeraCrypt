@@ -811,7 +811,7 @@ namespace VeraCrypt
 					DWORD effectiveSize = min (bytesRead, remainingSize);					
 					memcpy (buffer, ReadBuffer, effectiveSize);
 					offset.QuadPart = - ((LONGLONG) bytesRead) + (LONGLONG) effectiveSize;
-					SetFilePointerEx (Handle, offset, NULL, FILE_CURRENT);
+					throw_sys_if (!SetFilePointerEx (Handle, offset, NULL, FILE_CURRENT));
 					return alignedSize + effectiveSize;
 				}
 				else
@@ -1526,6 +1526,7 @@ namespace VeraCrypt
 	bool BootEncryption::SystemDriveIsDynamic ()
 	{
 		GetSystemDriveConfigurationRequest request;
+		memset (&request, 0, sizeof (request));
 		StringCchCopyW (request.DevicePath, ARRAYSIZE (request.DevicePath), GetSystemDriveConfiguration().DeviceKernelPath.c_str());
 
 		CallDriver (TC_IOCTL_GET_SYSTEM_DRIVE_CONFIG, &request, sizeof (request), &request, sizeof (request));
@@ -1898,6 +1899,7 @@ namespace VeraCrypt
 					throw ParameterIncorrect (SRC_POS);
 
 				GetSystemDriveConfigurationRequest request;
+				memset (&request, 0, sizeof (request));
 				StringCchCopyW (request.DevicePath, ARRAYSIZE (request.DevicePath), GetSystemDriveConfiguration().DeviceKernelPath.c_str());
 
 				CallDriver (TC_IOCTL_GET_SYSTEM_DRIVE_CONFIG, &request, sizeof (request), &request, sizeof (request));
@@ -2321,7 +2323,7 @@ namespace VeraCrypt
 		authorizeRetry = ReadConfigInteger (configContent, "AuthorizeRetry", 0);
 		bmlLockFlags = ReadConfigInteger (configContent, "DcsBmlLockFlags", 0);
 		bmlDriverEnabled = ReadConfigInteger (configContent, "DcsBmlDriver", 0);
-		actionSuccessValue = ReadConfigString (configContent, "ActionSuccess", "", buffer, sizeof (buffer));
+		actionSuccessValue = ReadConfigString (configContent, "ActionSuccess", "postexec file(EFI\\Microsoft\\Boot\\bootmgfw_ms.vc)", buffer, sizeof (buffer));
 
 		burn (buffer, sizeof (buffer));
 	}
@@ -2357,8 +2359,7 @@ namespace VeraCrypt
 		WriteConfigInteger (configFile, configContent, "AuthorizeRetry", authorizeRetry);
 		WriteConfigInteger (configFile, configContent, "DcsBmlLockFlags", bmlLockFlags);
 		WriteConfigInteger (configFile, configContent, "DcsBmlDriver", bmlDriverEnabled);
-		if (strlen(actionSuccessValue.c_str()))
-			WriteConfigString (configFile, configContent, "ActionSuccess", actionSuccessValue.c_str());
+		WriteConfigString (configFile, configContent, "ActionSuccess", actionSuccessValue.c_str());
 
 		// Write unmodified values
 		char* xml = configContent;
@@ -3065,6 +3066,7 @@ namespace VeraCrypt
 #endif
 			if (!LegacySpeakerImg)
 				throw ErrorException(L"Out of resource LegacySpeaker", SRC_POS);
+#ifdef VC_EFI_CUSTOM_MODE
 			DWORD sizeBootMenuLocker;
 #ifdef _WIN64
 			byte *BootMenuLockerImg = MapResource(L"BIN", IDR_EFI_DCSBML, &sizeBootMenuLocker);
@@ -3073,6 +3075,7 @@ namespace VeraCrypt
 #endif
 			if (!BootMenuLockerImg)
 				throw ErrorException(L"Out of resource DcsBml", SRC_POS);
+#endif
 			DWORD sizeDcsInfo;
 #ifdef _WIN64
 			byte *DcsInfoImg = MapResource(L"BIN", IDR_EFI_DCSINFO, &sizeDcsInfo);
@@ -3181,7 +3184,9 @@ namespace VeraCrypt
 				EfiBootInst.SaveFile(L"\\EFI\\VeraCrypt\\DcsInt.dcs", dcsIntImg, sizeDcsInt);
 				EfiBootInst.SaveFile(L"\\EFI\\VeraCrypt\\DcsCfg.dcs", dcsCfgImg, sizeDcsCfg);
 				EfiBootInst.SaveFile(L"\\EFI\\VeraCrypt\\LegacySpeaker.dcs", LegacySpeakerImg, sizeLegacySpeaker);
+#ifdef VC_EFI_CUSTOM_MODE
 				EfiBootInst.SaveFile(L"\\EFI\\VeraCrypt\\DcsBml.dcs", BootMenuLockerImg, sizeBootMenuLocker);
+#endif
 				EfiBootInst.SaveFile(L"\\EFI\\VeraCrypt\\DcsInfo.dcs", DcsInfoImg, sizeDcsInfo);
 				if (!preserveUserConfig)
 					EfiBootInst.DelFile(L"\\EFI\\VeraCrypt\\PlatformInfo");
@@ -3209,6 +3214,10 @@ namespace VeraCrypt
 				EfiBootInst.DelFile(L"\\LegacySpeaker.efi");
 				EfiBootInst.DelFile(L"\\DcsBoot");
 				EfiBootInst.DelFile(L"\\DcsProp");
+#ifndef VC_EFI_CUSTOM_MODE
+				// remove DcsBml if it exists since we don't use it in non-custom SecureBoot mode
+				EfiBootInst.DelFile(L"\\EFI\\VeraCrypt\\DcsBml.dcs");
+#endif
 			}
 			catch (...)
 			{
@@ -3389,6 +3398,7 @@ namespace VeraCrypt
 #endif
 			if (!LegacySpeakerImg)
 				throw ParameterIncorrect (SRC_POS);
+#ifdef VC_EFI_CUSTOM_MODE
 			DWORD sizeBootMenuLocker;
 #ifdef _WIN64
 			byte *BootMenuLockerImg = MapResource(L"BIN", IDR_EFI_DCSBML, &sizeBootMenuLocker);
@@ -3397,6 +3407,7 @@ namespace VeraCrypt
 #endif
 			if (!BootMenuLockerImg)
 				throw ParameterIncorrect (SRC_POS);
+#endif
 			DWORD sizeDcsRescue;
 #ifdef _WIN64
 			byte *DcsRescueImg = MapResource(L"BIN", IDR_EFI_DCSRE, &sizeDcsRescue);
@@ -3431,8 +3442,10 @@ namespace VeraCrypt
 
 			if (!ZipAdd (z, Is64BitOs()? "EFI/Boot/bootx64.efi": "EFI/Boot/bootia32.efi", DcsRescueImg, sizeDcsRescue))
 				throw ParameterIncorrect (SRC_POS);
+#ifdef VC_EFI_CUSTOM_MODE
 			if (!ZipAdd (z, "EFI/VeraCrypt/DcsBml.dcs", BootMenuLockerImg, sizeBootMenuLocker))
 				throw ParameterIncorrect (SRC_POS);
+#endif
 			if (!ZipAdd (z, "EFI/VeraCrypt/DcsBoot.efi", dcsBootImg, sizeDcsBoot))
 				throw ParameterIncorrect (SRC_POS);
 			if (!ZipAdd (z, "EFI/VeraCrypt/DcsCfg.dcs", dcsCfgImg, sizeDcsCfg))
@@ -3693,7 +3706,9 @@ namespace VeraCrypt
 		{
 			const wchar_t* efi64Files[] = {
 				L"EFI/Boot/bootx64.efi",
+#ifdef VC_EFI_CUSTOM_MODE
 				L"EFI/VeraCrypt/DcsBml.dcs",
+#endif
 				L"EFI/VeraCrypt/DcsBoot.efi",
 				L"EFI/VeraCrypt/DcsCfg.dcs",
 				L"EFI/VeraCrypt/DcsInt.dcs",
@@ -3704,7 +3719,9 @@ namespace VeraCrypt
 			
 			const wchar_t* efi32Files[] = {
 				L"EFI/Boot/bootia32.efi",
+#ifdef VC_EFI_CUSTOM_MODE
 				L"EFI/VeraCrypt/DcsBml.dcs",
+#endif
 				L"EFI/VeraCrypt/DcsBoot.efi",
 				L"EFI/VeraCrypt/DcsCfg.dcs",
 				L"EFI/VeraCrypt/DcsInt.dcs",
@@ -3884,7 +3901,9 @@ namespace VeraCrypt
 
 					const wchar_t* efi64Files[] = {
 						L"EFI/Boot/bootx64.efi",
+#ifdef VC_EFI_CUSTOM_MODE
 						L"EFI/VeraCrypt/DcsBml.dcs",
+#endif
 						L"EFI/VeraCrypt/DcsBoot.efi",
 						L"EFI/VeraCrypt/DcsCfg.dcs",
 						L"EFI/VeraCrypt/DcsInt.dcs",
@@ -3895,7 +3914,9 @@ namespace VeraCrypt
 					
 					const wchar_t* efi32Files[] = {
 						L"EFI/Boot/bootia32.efi",
+#ifdef VC_EFI_CUSTOM_MODE
 						L"EFI/VeraCrypt/DcsBml.dcs",
+#endif
 						L"EFI/VeraCrypt/DcsBoot.efi",
 						L"EFI/VeraCrypt/DcsCfg.dcs",
 						L"EFI/VeraCrypt/DcsInt.dcs",
@@ -4084,6 +4105,8 @@ namespace VeraCrypt
 			std::vector<byte> bootLoaderBuf;
 			const wchar_t * szStdEfiBootloader = Is64BitOs()? L"\\EFI\\Boot\\bootx64.efi": L"\\EFI\\Boot\\bootia32.efi";
 			const wchar_t * szBackupEfiBootloader = Is64BitOs()? L"\\EFI\\Boot\\original_bootx64.vc_backup": L"\\EFI\\Boot\\original_bootia32.vc_backup";
+			const wchar_t * szStdMsBootloader = L"\\EFI\\Microsoft\\Boot\\bootmgfw.efi";
+			const wchar_t * szBackupMsBootloader = L"\\EFI\\Microsoft\\Boot\\bootmgfw_ms.vc";
 			const char* g_szMsBootString = "bootmgfw.pdb";
 			bool bModifiedMsBoot = true;
 
@@ -4091,9 +4114,9 @@ namespace VeraCrypt
 
 			EfiBootInst.MountBootPartition(0);		
 
-			EfiBootInst.GetFileSize(L"\\EFI\\Microsoft\\Boot\\bootmgfw.efi", loaderSize);
+			EfiBootInst.GetFileSize(szStdMsBootloader, loaderSize);
 			bootLoaderBuf.resize ((size_t) loaderSize);
-			EfiBootInst.ReadFile(L"\\EFI\\Microsoft\\Boot\\bootmgfw.efi", &bootLoaderBuf[0], (DWORD) loaderSize);
+			EfiBootInst.ReadFile(szStdMsBootloader, &bootLoaderBuf[0], (DWORD) loaderSize);
 
 			// DcsBoot.efi is always smaller than 32KB
 			if (loaderSize > 32768)
@@ -4108,7 +4131,24 @@ namespace VeraCrypt
 				{
 					if (AskWarnNoYes ("TC_BOOT_LOADER_ALREADY_INSTALLED", ParentWindow) == IDNO)
 						throw UserAbort (SRC_POS);
-					return;
+
+					// check if backup exists already and if it has bootmgfw signature
+					if (EfiBootInst.FileExists (szBackupMsBootloader))
+					{
+						EfiBootInst.GetFileSize(szBackupMsBootloader, loaderSize);
+						bootLoaderBuf.resize ((size_t) loaderSize);
+						EfiBootInst.ReadFile(szBackupMsBootloader, &bootLoaderBuf[0], (DWORD) loaderSize);
+
+						if (BufferHasPattern (bootLoaderBuf.data (), (size_t) loaderSize, g_szMsBootString, strlen (g_szMsBootString)))
+						{
+							// copy it to original location
+							EfiBootInst.CopyFile (szBackupMsBootloader, szStdMsBootloader);
+							bModifiedMsBoot = false;
+						}
+					}
+
+					if (bModifiedMsBoot)
+						return;
 				}
 			}
 
@@ -4118,7 +4158,7 @@ namespace VeraCrypt
 				throw UserAbort (SRC_POS);
 			}
 
-			EfiBootInst.CopyFile (L"\\EFI\\Microsoft\\Boot\\bootmgfw.efi", L"\\EFI\\Microsoft\\Boot\\bootmgfw_ms.vc");
+			EfiBootInst.CopyFile (szStdMsBootloader, szBackupMsBootloader);
 
 			if (EfiBootInst.FileExists (szStdEfiBootloader))
 			{
@@ -4133,6 +4173,14 @@ namespace VeraCrypt
 				{
 					if (AskWarnNoYes ("TC_BOOT_LOADER_ALREADY_INSTALLED", ParentWindow) == IDNO)
 						throw UserAbort (SRC_POS);
+
+					// check if backup exists already and if it has bootmgfw signature
+					if (EfiBootInst.FileExists (szBackupEfiBootloader))
+					{
+						// perform the backup on disk using this file
+						EfiBootInst.CopyFile (szBackupEfiBootloader, GetSystemLoaderBackupPath().c_str());
+					}
+
 					return;
 				}
 
@@ -4140,7 +4188,7 @@ namespace VeraCrypt
 				EfiBootInst.CopyFile (szStdEfiBootloader, szBackupEfiBootloader);
 			}
 			else
-				EfiBootInst.CopyFile (L"\\EFI\\Microsoft\\Boot\\bootmgfw.efi", GetSystemLoaderBackupPath().c_str());
+				EfiBootInst.CopyFile (szStdMsBootloader, GetSystemLoaderBackupPath().c_str());
 
 		}
 		else
@@ -4767,15 +4815,16 @@ namespace VeraCrypt
 		if (config.SystemPartition.IsGPT)
 		{
 			STORAGE_DEVICE_NUMBER sdn;
+#ifdef VC_EFI_CUSTOM_MODE
 			BOOL bSecureBootEnabled = FALSE, bVeraCryptKeysLoaded = FALSE;
 			GetSecureBootConfig (&bSecureBootEnabled, &bVeraCryptKeysLoaded);
-			GetEfiBootDeviceNumber (&sdn);
-			activePartitionFound = (config.DriveNumber == (int) sdn.DeviceNumber);
-
 			if (bSecureBootEnabled && !bVeraCryptKeysLoaded)
 			{
 				throw ErrorException ("SYSENC_EFI_UNSUPPORTED_SECUREBOOT", SRC_POS);
 			}
+#endif
+			GetEfiBootDeviceNumber (&sdn);
+			activePartitionFound = (config.DriveNumber == (int) sdn.DeviceNumber);
 		}
 		else
 		{

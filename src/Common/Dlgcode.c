@@ -81,6 +81,18 @@
 
 #pragma comment( lib, "setupapi.lib" )
 
+#ifndef TTI_INFO_LARGE
+#define TTI_INFO_LARGE          4
+#endif
+
+#ifndef TTI_WARNING_LARGE
+#define TTI_WARNING_LARGE       5
+#endif
+
+#ifndef TTI_ERROR_LARGE
+#define TTI_ERROR_LARGE         6
+#endif
+
 /* GPT Partition Type GUIDs */
 #define LOCAL_DEFINE_GUID(name, l, w1, w2, b1, b2, b3, b4, b5, b6, b7, b8) const GUID name = {l, w1, w2, b1, b2, b3, b4, b5, b6, b7, b8}
 LOCAL_DEFINE_GUID(PARTITION_ENTRY_UNUSED_GUID,   0x00000000L, 0x0000, 0x0000, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00);    // Entry unused
@@ -138,6 +150,10 @@ BOOL bMountDevicesOnLogon = FALSE;
 BOOL bMountFavoritesOnLogon = FALSE;
 
 BOOL bHistory = FALSE;
+
+#ifndef SETUP
+BOOL bLanguageSetInSetup = FALSE;
+#endif
 
 // Status of detection of hidden sectors (whole-system-drive encryption). 
 // 0 - Unknown/undetermined/completed, 1: Detection is or was in progress (but did not complete e.g. due to system crash).
@@ -1178,11 +1194,136 @@ static LRESULT CALLBACK BootPwdFieldProc (HWND hwnd, UINT message, WPARAM wParam
 void ToBootPwdField (HWND hwndDlg, UINT ctrlId)
 {
 	HWND hwndCtrl = GetDlgItem (hwndDlg, ctrlId);
-
-	SetWindowLongPtrW (hwndCtrl, GWLP_USERDATA, (LONG_PTR) GetWindowLongPtrW (hwndCtrl, GWLP_WNDPROC));
+	WNDPROC originalwp = (WNDPROC) GetWindowLongPtrW (hwndCtrl, GWLP_USERDATA);
+	// if ToNormalPwdField has been called before, GWLP_USERDATA already contains original WNDPROC
+	if (!originalwp)
+	{		
+		SetWindowLongPtrW (hwndCtrl, GWLP_USERDATA, (LONG_PTR) GetWindowLongPtrW (hwndCtrl, GWLP_WNDPROC));
+	}
 	SetWindowLongPtrW (hwndCtrl, GWLP_WNDPROC, (LONG_PTR) BootPwdFieldProc);
 }
 
+// Ensures that a warning is displayed when user is pasting a password longer than the maximum
+// length which is set to 64 characters
+static LRESULT CALLBACK NormalPwdFieldProc (HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
+{
+	WNDPROC wp = (WNDPROC) GetWindowLongPtrW (hwnd, GWLP_USERDATA);
+
+	switch (message)
+	{
+	case WM_PASTE:
+		{
+			bool bBlock = false;
+			if (OpenClipboard (NULL))
+			{
+				HANDLE h = GetClipboardData (CF_UNICODETEXT);
+				if (h)
+				{
+					wchar_t *pchData = (wchar_t*)GlobalLock(h);
+					int txtlen = 0;
+					while (*pchData)
+					{
+						if (*pchData == '\r' || *pchData == '\n')
+							break;
+						else
+						{
+							txtlen++;
+							pchData++;
+						}
+					}
+
+					if (txtlen)
+					{
+						int curLen = GetWindowTextLength (hwnd);
+						if (curLen == MAX_PASSWORD)
+						{
+							EDITBALLOONTIP ebt;
+
+							ebt.cbStruct = sizeof( EDITBALLOONTIP );
+							ebt.pszText = GetString ("PASSWORD_MAXLENGTH_REACHED");
+							ebt.pszTitle = lpszTitle;
+							ebt.ttiIcon = TTI_ERROR_LARGE;    // tooltip warning icon
+
+							SendMessage(hwnd, EM_SHOWBALLOONTIP, 0, (LPARAM)&ebt);
+
+							MessageBeep (0xFFFFFFFF);
+
+							bBlock = true;
+						}
+						else if ((txtlen + curLen) > MAX_PASSWORD)
+						{
+							EDITBALLOONTIP ebt;
+
+							ebt.cbStruct = sizeof( EDITBALLOONTIP );
+							ebt.pszText = GetString ("PASSWORD_PASTED_TRUNCATED");
+							ebt.pszTitle = lpszTitle;
+							ebt.ttiIcon = TTI_WARNING_LARGE;    // tooltip warning icon
+
+							SendMessage(hwnd, EM_SHOWBALLOONTIP, 0, (LPARAM)&ebt);
+
+							MessageBeep (0xFFFFFFFF);
+						}
+						else
+							 SendMessage(hwnd, EM_HIDEBALLOONTIP, 0, 0);
+					}
+					GlobalUnlock(h);
+				}
+				CloseClipboard ();
+			}
+
+			if (bBlock)
+				return FALSE;
+		}
+		break;
+	case WM_CHAR:
+		{
+			DWORD dwStartPos = 0, dwEndPos = 0;
+			short vk = VkKeyScanW ((WCHAR) wParam);
+			BYTE vkCode = LOBYTE (vk);
+			BYTE vkState = HIBYTE (vk);
+			bool ctrlPressed = (vkState & 2) && !(vkState & 4);
+
+			// check if there is a selected text
+			SendMessage (hwnd,	EM_GETSEL, (WPARAM) &dwStartPos, (LPARAM) &dwEndPos);
+
+			if ((dwStartPos == dwEndPos) 
+				&& (vkCode != VK_DELETE) && (vkCode != VK_BACK) 
+				&& !ctrlPressed 
+				&& (GetWindowTextLength (hwnd) == MAX_PASSWORD))
+			{
+				EDITBALLOONTIP ebt;
+
+				ebt.cbStruct = sizeof( EDITBALLOONTIP );
+				ebt.pszText = GetString ("PASSWORD_MAXLENGTH_REACHED");
+				ebt.pszTitle = lpszTitle;
+				ebt.ttiIcon = TTI_ERROR_LARGE;    // tooltip warning icon
+
+				SendMessage(hwnd, EM_SHOWBALLOONTIP, 0, (LPARAM)&ebt);
+
+				MessageBeep (0xFFFFFFFF);
+			}
+			else
+				 SendMessage(hwnd, EM_HIDEBALLOONTIP, 0, 0);
+		}
+		break;
+	}
+
+	return CallWindowProcW (wp, hwnd, message, wParam, lParam);
+}
+
+void ToNormalPwdField (HWND hwndDlg, UINT ctrlId)
+{
+	HWND hwndCtrl = GetDlgItem (hwndDlg, ctrlId);
+	WNDPROC originalwp = (WNDPROC) GetWindowLongPtrW (hwndCtrl, GWLP_USERDATA);
+
+	SendMessage (hwndCtrl, EM_LIMITTEXT, MAX_PASSWORD, 0);
+	// only change WNDPROC if not changed already
+	if (!originalwp)
+	{
+		SetWindowLongPtrW (hwndCtrl, GWLP_USERDATA, (LONG_PTR) GetWindowLongPtrW (hwndCtrl, GWLP_WNDPROC));
+		SetWindowLongPtrW (hwndCtrl, GWLP_WNDPROC, (LONG_PTR) NormalPwdFieldProc);
+	}
+}
 
 
 // This function currently serves the following purposes:
@@ -2899,6 +3040,26 @@ void InitApp (HINSTANCE hInstance, wchar_t *lpszCommandLine)
 	// Language
 	langId[0] = 0;
 	SetPreferredLangId (ConfigReadString ("Language", "", langId, sizeof (langId)));
+
+#ifndef SETUP
+	if (langId[0] == 0)
+	{
+		// check if user selected a language during installation
+		WCHAR uiLang[6];
+		ReadRegistryString (L"Software\\VeraCrypt", L"SetupUILanguage", L"", uiLang, sizeof (uiLang));
+		if (0 < WideCharToMultiByte (CP_ACP, 0, uiLang, -1, langId, sizeof (langId), NULL, NULL))
+		{
+			SetPreferredLangId (langId);
+			bLanguageSetInSetup = TRUE;
+		}
+	}
+
+#ifndef VCEXPANDER
+	// delete the registry key created by the installer (if any)
+	DeleteRegistryKey (HKEY_CURRENT_USER, L"Software\\VeraCrypt");
+#endif
+
+#endif
 	
 	if (langId[0] == 0)
 	{
@@ -5397,7 +5558,7 @@ static BOOL PerformBenchmark(HWND hBenchDlg, HWND hwndDlg)
 			a single digest.
 		*/
 		{
-			BYTE *digest [MAX_DIGESTSIZE];
+			BYTE digest [MAX_DIGESTSIZE];
 			WHIRLPOOL_CTX	wctx;
 			RMD160_CTX		rctx;
 			sha512_ctx		s2ctx;
@@ -8609,6 +8770,33 @@ BOOL GetPhysicalDriveGeometry (int driveNumber, PDISK_GEOMETRY_EX diskGeometry)
 			diskGeometry->DiskSize.QuadPart = ((PDISK_GEOMETRY_EX) dgBuffer)->DiskSize.QuadPart;
 			bResult = TRUE;
 		}
+		else
+		{
+			DISK_GEOMETRY geo;
+			if (	DeviceIoControl (hDev, IOCTL_DISK_GET_DRIVE_GEOMETRY, NULL, 0, (LPVOID) &geo, sizeof (geo), &bytesRead, NULL)
+				&& (bytesRead >= sizeof (DISK_GEOMETRY))
+				&& geo.BytesPerSector)
+			{
+				memcpy (&diskGeometry->Geometry, &geo, sizeof (DISK_GEOMETRY));
+				diskGeometry->DiskSize.QuadPart = geo.Cylinders.QuadPart * geo.SectorsPerTrack * geo.TracksPerCylinder * geo.BytesPerSector;
+				bResult = TRUE;
+
+				if (CurrentOSMajor >= 6)
+				{
+					STORAGE_READ_CAPACITY storage = {0};
+
+					storage.Version = sizeof (STORAGE_READ_CAPACITY);
+					storage.Size = sizeof (STORAGE_READ_CAPACITY);
+					if (DeviceIoControl (hDev, IOCTL_STORAGE_READ_CAPACITY, NULL, 0, (LPVOID) &storage, sizeof (storage), &bytesRead, NULL)
+						&& (bytesRead >= sizeof (storage))
+						&& (storage.Size == sizeof (STORAGE_READ_CAPACITY))
+						)
+					{
+						diskGeometry->DiskSize.QuadPart = storage.DiskLength.QuadPart;
+					}
+				}
+			}
+		}
 
 		CloseHandle (hDev);
 	}
@@ -11011,8 +11199,28 @@ int OpenVolume (OpenVolumeContext *context, const wchar_t *volumePath, Password 
 
 			if (!DeviceIoControl (context->HostFileHandle, IOCTL_DISK_GET_DRIVE_GEOMETRY_EX, NULL, 0, dgBuffer, sizeof (dgBuffer), &dwResult, NULL))
 			{
-				status = ERR_OS_ERROR;
-				goto error;
+				DISK_GEOMETRY geo;
+				if (DeviceIoControl (context->HostFileHandle, IOCTL_DISK_GET_DRIVE_GEOMETRY, NULL, 0, (LPVOID) &geo, sizeof (geo), &dwResult, NULL))
+				{
+					((PDISK_GEOMETRY_EX) dgBuffer)->DiskSize.QuadPart = geo.Cylinders.QuadPart * geo.SectorsPerTrack * geo.TracksPerCylinder * geo.BytesPerSector;
+
+					if (CurrentOSMajor >= 6)
+					{
+						STORAGE_READ_CAPACITY storage = {0};
+
+						storage.Version = sizeof (STORAGE_READ_CAPACITY);
+						storage.Size = sizeof (STORAGE_READ_CAPACITY);
+						if (DeviceIoControl (context->HostFileHandle, IOCTL_STORAGE_READ_CAPACITY, NULL, 0, (LPVOID) &storage, sizeof (storage), &dwResult, NULL))
+						{
+							((PDISK_GEOMETRY_EX) dgBuffer)->DiskSize.QuadPart = storage.DiskLength.QuadPart;
+						}
+					}
+				}
+				else
+				{
+					status = ERR_OS_ERROR;
+					goto error;
+				}
 			}
 
 			context->HostSize = ((PDISK_GEOMETRY_EX) dgBuffer)->DiskSize.QuadPart;
@@ -11206,7 +11414,8 @@ BOOL IsPagingFileActive (BOOL checkNonWindowsPartitionsOnly)
 		BYTE dgBuffer[256];
 		DWORD dwResult;
 
-		if (!DeviceIoControl (handle, IOCTL_DISK_GET_DRIVE_GEOMETRY_EX, NULL, 0, dgBuffer, sizeof (dgBuffer), &dwResult, NULL))
+		if (!DeviceIoControl (handle, IOCTL_DISK_GET_DRIVE_GEOMETRY_EX, NULL, 0, dgBuffer, sizeof (dgBuffer), &dwResult, NULL)
+			&& !DeviceIoControl (handle, IOCTL_DISK_GET_DRIVE_GEOMETRY, NULL, 0, dgBuffer, sizeof (dgBuffer), &dwResult, NULL))
 		{
 			CloseHandle (handle);
 			continue;
@@ -11812,10 +12021,8 @@ std::vector <HostDevice> GetAvailableHostDevices (bool noDeviceProperties, bool 
 	{
 		for (int partNumber = 0; partNumber < MAX_HOST_PARTITION_NUMBER; partNumber++)
 		{
-			wstringstream strm;
-			strm << L"\\Device\\Harddisk" << devNumber << L"\\Partition" << partNumber;
-			wstring devPathStr (strm.str());
-			const wchar_t *devPath = devPathStr.c_str();
+			WCHAR devPath[32];
+			StringCbPrintfW (devPath, sizeof (devPath), L"\\Device\\Harddisk%d\\Partition%d", devNumber, partNumber);
 
 			OPEN_TEST_STRUCT openTest = {0};
 			if (!OpenDevice (devPath, &openTest, detectUnencryptedFilesystems && partNumber != 0, FALSE))
@@ -11855,7 +12062,7 @@ std::vector <HostDevice> GetAvailableHostDevices (bool noDeviceProperties, bool 
 			{
 				DISK_GEOMETRY_EX geometry;
 
-				int driveNumber = GetDiskDeviceDriveLetter ((wchar_t *) devPathStr.c_str());
+				int driveNumber = GetDiskDeviceDriveLetter (devPath);
 
 				if (driveNumber >= 0)
 				{
@@ -11916,10 +12123,8 @@ std::vector <HostDevice> GetAvailableHostDevices (bool noDeviceProperties, bool 
 	{
 		for (int devNumber = 0; devNumber < 256; devNumber++)
 		{
-			wstringstream strm;
-			strm << L"\\Device\\HarddiskVolume" << devNumber;
-			wstring devPathStr (strm.str());
-			const wchar_t *devPath = devPathStr.c_str();
+			WCHAR devPath[32];
+			StringCbPrintfW (devPath, sizeof (devPath), L"\\Device\\HarddiskVolume%d", devNumber);
 
 			OPEN_TEST_STRUCT openTest = {0};
 			if (!OpenDevice (devPath, &openTest, detectUnencryptedFilesystems, FALSE))
@@ -11938,7 +12143,7 @@ std::vector <HostDevice> GetAvailableHostDevices (bool noDeviceProperties, bool 
 
 				if (!noDeviceProperties)
 				{
-					int driveNumber = GetDiskDeviceDriveLetter ((wchar_t *) devPathStr.c_str());
+					int driveNumber = GetDiskDeviceDriveLetter (devPath);
 
 					if (driveNumber >= 0)
 					{
@@ -11964,10 +12169,8 @@ std::vector <HostDevice> GetAvailableHostDevices (bool noDeviceProperties, bool 
 
 void AddDeviceToList (std::vector<HostDevice>& devices, int devNumber, int partNumber)
 {
-	wstringstream strm;
-	strm << L"\\Device\\Harddisk" << devNumber << L"\\Partition" << partNumber;
-	wstring devPathStr (strm.str());
-	const wchar_t *devPath = devPathStr.c_str();
+	WCHAR devPath[64];
+	StringCbPrintfW (devPath, sizeof (devPath), L"\\Device\\Harddisk%d\\Partition%d", devNumber, partNumber);
 
 	HostDevice device;
 	device.SystemNumber = devNumber;
@@ -12243,10 +12446,8 @@ void UpdateMountableHostDeviceList ()
 	{
 		for (int devNumber = 0; devNumber < 256; devNumber++)
 		{
-			wstringstream strm;
-			strm << L"\\Device\\HarddiskVolume" << devNumber;
-			wstring devPathStr (strm.str());
-			const wchar_t *devPath = devPathStr.c_str();
+			WCHAR devPath[32];
+			StringCbPrintfW (devPath, sizeof (devPath), L"\\Device\\HarddiskVolume%d", devNumber);
 
 			OPEN_TEST_STRUCT openTest = {0};
 			if (!OpenDevice (devPath, &openTest, FALSE, FALSE))
@@ -12303,10 +12504,8 @@ wstring FindDeviceByVolumeID (const BYTE volumeID [VOLUME_ID_SIZE], BOOL bFromSe
 		{
 			for (int partNumber = 0; partNumber < MAX_HOST_PARTITION_NUMBER; partNumber++)
 			{
-				wstringstream strm;
-				strm << L"\\Device\\Harddisk" << devNumber << L"\\Partition" << partNumber;
-				wstring devPathStr (strm.str());
-				const wchar_t *devPath = devPathStr.c_str();
+				WCHAR devPath[32];
+				StringCbPrintfW (devPath, sizeof (devPath), L"\\Device\\Harddisk%d\\Partition%d", devNumber, partNumber);
 
 				OPEN_TEST_STRUCT openTest = {0};
 				if (OpenDevice (devPath, &openTest, TRUE, TRUE)
@@ -13259,11 +13458,9 @@ static DWORD WINAPI SecureDesktopThread(LPVOID lpThreadParameter)
 	SecureDesktopMonitoringThreadParam monitorParam;
 	HDESK hOriginalDesk = GetThreadDesktop (GetCurrentThreadId ());
 	BOOL bNewDesktopSet = FALSE;
-	int counter = 0;
 
 	// wait for SwitchDesktop to succeed before using it for current thread
-	// we wait a maximum of 5 seconds
-	for (counter = 0; counter < 10; counter++)
+	while (true)
 	{
 		if (SwitchDesktop (pParam->hDesk))
 		{
@@ -13352,6 +13549,21 @@ INT_PTR SecureDesktopDialogBoxParam(
 		map<DWORD, BOOL> ctfmonBeforeList, ctfmonAfterList;
 		DWORD desktopAccess = DESKTOP_CREATEMENU | DESKTOP_CREATEWINDOW | DESKTOP_READOBJECTS | DESKTOP_SWITCHDESKTOP | DESKTOP_WRITEOBJECTS;
 		HDESK hSecureDesk;
+
+		HDESK hInputDesk = NULL;
+
+		// wait for the input desktop to be available before switching to 
+		// secure desktop. Under Windows 10, the user session can be started
+		// in the background even before the user has authenticated and in this
+		// case, we wait for the user to be really authenticated before starting 
+		// secure desktop mechanism
+
+		while (!(hInputDesk = OpenInputDesktop (0, TRUE, GENERIC_READ)))
+		{
+			Sleep (SECUREDESKTOP_MONOTIR_PERIOD);
+		}
+
+		CloseDesktop (hInputDesk);
 		
 		// get the initial list of ctfmon.exe processes before creating new desktop
 		GetCtfMonProcessIdList (ctfmonBeforeList);
@@ -13411,6 +13623,7 @@ INT_PTR SecureDesktopDialogBoxParam(
 
 #endif
 
+#ifdef NDEBUG
 static BOOL InitializeWintrust()
 {
 	if (!hWinTrustLib)
@@ -13456,6 +13669,8 @@ static void FinalizeWintrust()
 		hWinTrustLib = NULL;
 	}
 }
+
+#endif
 
 BOOL VerifyModuleSignature (const wchar_t* path)
 {

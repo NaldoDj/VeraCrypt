@@ -178,6 +178,7 @@ int SysEncDetectHiddenSectors = -1;		/* Whether the user wants us to detect and 
 int SysEncDriveAnalysisStart;
 BOOL bDontVerifyRescueDisk = FALSE;
 BOOL bFirstSysEncResumeDone = FALSE;
+BOOL bDontCheckFileContainerSize = FALSE; /* If true, we don't check if the given size of file container is smaller than the available size on the hosting disk */
 int nMultiBoot = 0;			/* The number of operating systems installed on the computer, according to the user. 0: undetermined, 1: one, 2: two or more */
 volatile BOOL bHiddenVol = FALSE;	/* If true, we are (or will be) creating a hidden volume. */
 volatile BOOL bHiddenVolHost = FALSE;	/* If true, we are (or will be) creating the host volume (called "outer") for a hidden volume. */
@@ -248,6 +249,7 @@ int CmdVolumePim = 0;
 int CmdVolumeFilesystem = FILESYS_NONE;
 unsigned __int64 CmdVolumeFileSize = 0;
 BOOL CmdSparseFileSwitch = FALSE;
+BOOL CmdQuickFormat = FALSE;
 
 BOOL bForceOperation = FALSE;
 
@@ -286,6 +288,9 @@ volatile int clusterSize = 0;
 SYSENC_MULTIBOOT_CFG	SysEncMultiBootCfg;
 wchar_t SysEncMultiBootCfgOutcome [4096] = {L'N',L'/',L'A',0};
 volatile int NonSysInplaceEncStatus = NONSYS_INPLACE_ENC_STATUS_NONE;
+
+LONGLONG nAvailableFreeSpace = -1;
+BOOL bIsSparseFilesSupportedByHost = FALSE;
 
 vector <HostDevice> DeferredNonSysInPlaceEncDevices;
 
@@ -818,7 +823,7 @@ static void LoadSettings (HWND hwndDlg)
 	LoadSettingsAndCheckModified (hwndDlg, FALSE, NULL, NULL);
 }
 
-static void SaveSettings (HWND hwndDlg)
+void SaveSettings (HWND hwndDlg)
 {
 	WaitCursor ();
 
@@ -1538,6 +1543,12 @@ static void VerifySizeAndUpdate (HWND hwndDlg, BOOL bUpdate)
 		{
 			if (lTmp * i > (bHiddenVolHost ? TC_MAX_HIDDEN_VOLUME_HOST_SIZE : TC_MAX_VOLUME_SIZE))
 				bEnable = FALSE;
+			else if (!bDevice && (lTmp * i > nAvailableFreeSpace) && !bDontCheckFileContainerSize && (!bIsSparseFilesSupportedByHost || bHiddenVolHost))
+			{
+				// we check container size against available free space only when creating dynamic volume is not possible
+				// which is the case if filesystem doesn't allow sparce file or if we are creating outer volume of a hidden volume
+				bEnable = FALSE;
+			}
 		}
 	}
 
@@ -3366,13 +3377,22 @@ BOOL GetFileVolSize (HWND hwndDlg, unsigned __int64 *size)
 }
 
 
-BOOL QueryFreeSpace (HWND hwndDlg, HWND hwndTextBox, BOOL display)
+BOOL QueryFreeSpace (HWND hwndDlg, HWND hwndTextBox, BOOL display, LONGLONG *pFreeSpaceValue, BOOL* pbIsSparceFilesSupported)
 {
+	if (pFreeSpaceValue)
+		*pFreeSpaceValue = 0;
+
+	if (pbIsSparceFilesSupported)
+		*pbIsSparceFilesSupported = FALSE;
+
 	if (bHiddenVol && !bHiddenVolHost)	// If it's a hidden volume
 	{
 		LARGE_INTEGER lDiskFree;
 
 		lDiskFree.QuadPart = nMaximumHiddenVolSize;
+
+		if (pFreeSpaceValue)
+			*pFreeSpaceValue = nMaximumHiddenVolSize;
 
 		if (display)
 			PrintFreeSpace (hwndTextBox, NULL, &lDiskFree);
@@ -3382,12 +3402,21 @@ BOOL QueryFreeSpace (HWND hwndDlg, HWND hwndTextBox, BOOL display)
 	else if (bDevice == FALSE)
 	{
 		wchar_t root[TC_MAX_PATH];
+		DWORD fileSystemFlags = 0;
 		ULARGE_INTEGER free;
 
 		if (!GetVolumePathName (szFileName, root, ARRAYSIZE (root)))
 		{
 			handleWin32Error (hwndDlg, SRC_POS);
 			return FALSE;
+		}
+
+		if (	pbIsSparceFilesSupported
+			&&	GetVolumeInformation (root, NULL, 0, NULL, NULL, &fileSystemFlags, NULL, 0)
+			&&	(fileSystemFlags & FILE_SUPPORTS_SPARSE_FILES)
+			)
+		{
+			*pbIsSparceFilesSupported = TRUE;
 		}
 
 		if (!GetDiskFreeSpaceEx (root, &free, 0, 0))
@@ -3401,6 +3430,9 @@ BOOL QueryFreeSpace (HWND hwndDlg, HWND hwndTextBox, BOOL display)
 		{
 			LARGE_INTEGER lDiskFree;
 			lDiskFree.QuadPart = free.QuadPart;
+
+			if (pFreeSpaceValue)
+				*pFreeSpaceValue = free.QuadPart;
 
 			if (display)
 				PrintFreeSpace (hwndTextBox, root, &lDiskFree);
@@ -3462,6 +3494,9 @@ BOOL QueryFreeSpace (HWND hwndDlg, HWND hwndTextBox, BOOL display)
 			lDiskFree.QuadPart = driveInfo.DiskSize.QuadPart;
 
 			nVolumeSize = lDiskFree.QuadPart;
+
+			if (pFreeSpaceValue)
+				*pFreeSpaceValue = lDiskFree.QuadPart;
 
 			if (display)
 				nMultiplier = PrintFreeSpace (hwndTextBox, szDiskFile, &lDiskFree);
@@ -4169,7 +4204,7 @@ BOOL CALLBACK PageDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 				SendMessage (GetDlgItem (hwndDlg, IDC_SPACE_LEFT), WM_SETFONT, (WPARAM) hBoldFont, (LPARAM) TRUE);
 				SendMessage (GetDlgItem (hwndDlg, IDC_SIZEBOX), EM_LIMITTEXT, 12, 0);
 
-				if(!QueryFreeSpace (hwndDlg, GetDlgItem (hwndDlg, IDC_SPACE_LEFT), TRUE))
+				if(!QueryFreeSpace (hwndDlg, GetDlgItem (hwndDlg, IDC_SPACE_LEFT), TRUE, &nAvailableFreeSpace, &bIsSparseFilesSupportedByHost))
 				{
 					nUIVolumeSize=0;
 					nVolumeSize=0;
@@ -4265,7 +4300,7 @@ BOOL CALLBACK PageDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 				/* make autodetection the default */
 				SendMessage (hComboBox, CB_SETCURSEL, 0, 0);
 
-				SendMessage (GetDlgItem (hwndDlg, IDC_PASSWORD_DIRECT), EM_LIMITTEXT, MAX_PASSWORD, 0);
+				ToNormalPwdField (hwndDlg, IDC_PASSWORD_DIRECT);
 
 				SetPassword (hwndDlg, IDC_PASSWORD_DIRECT, szRawPassword);
 
@@ -4300,6 +4335,9 @@ BOOL CALLBACK PageDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 
 				hPasswordInputField = GetDlgItem (hwndDlg, IDC_PASSWORD);
 				hVerifyPasswordInputField = GetDlgItem (hwndDlg, IDC_VERIFY);
+
+				ToNormalPwdField (hwndDlg, IDC_PASSWORD);
+				ToNormalPwdField (hwndDlg, IDC_VERIFY);
 
 				if (SysEncInEffect ())
 				{
@@ -4344,9 +4382,6 @@ BOOL CALLBACK PageDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 				{
 					StringCbCopyW (str, sizeof(str), GetString ("PASSWORD_HELP"));
 				}
-
-				SendMessage (GetDlgItem (hwndDlg, IDC_PASSWORD), EM_LIMITTEXT, MAX_PASSWORD, 0);
-				SendMessage (GetDlgItem (hwndDlg, IDC_VERIFY), EM_LIMITTEXT, MAX_PASSWORD, 0);
 
 				SetPassword (hwndDlg, IDC_PASSWORD, szRawPassword);
 				SetPassword (hwndDlg, IDC_VERIFY, szVerify);
@@ -6027,6 +6062,11 @@ BOOL CALLBACK MainDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 
 			LoadSettings (hwndDlg);
 
+			// Save language to XML configuration file if it has been selected in the setup
+			// so that other VeraCrypt programs will pick it up
+			if (bLanguageSetInSetup)
+				SaveSettings (hwndDlg);
+
 			LoadDefaultKeyFilesParam ();
 			RestoreDefaultKeyFilesParam ();
 
@@ -6153,7 +6193,7 @@ BOOL CALLBACK MainDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 					}
 				}
 
-				quickFormat = TRUE;
+				quickFormat = CmdQuickFormat;
 
 				if (!GetDiskFreeSpaceEx (root, &free, 0, 0))
 				{
@@ -7348,7 +7388,7 @@ BOOL CALLBACK MainDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 
 					if (bDevice)
 					{
-						if(!QueryFreeSpace (hwndDlg, GetDlgItem (hwndDlg, IDC_SPACE_LEFT), FALSE))
+						if(!QueryFreeSpace (hwndDlg, GetDlgItem (hwndDlg, IDC_SPACE_LEFT), FALSE, NULL, NULL))
 						{
 							MessageBoxW (hwndDlg, GetString ("CANT_GET_VOLSIZE"), lpszTitle, ICON_HAND);
 							NormalCursor ();
@@ -8315,6 +8355,12 @@ retryCDDriveCheck:
 
 				quickFormat = IsButtonChecked (GetDlgItem (hCurPage, IDC_QUICKFORMAT));
 
+				if (!quickFormat && !bDevice && !(bHiddenVol && !bHiddenVolHost) && (nVolumeSize > (ULONGLONG) nAvailableFreeSpace))
+				{
+					Error("VOLUME_TOO_LARGE_FOR_HOST", hwndDlg);
+					bVolTransformThreadToRun = FALSE;
+					return 1;
+				}
 
 				if (!bHiddenVol && IsHiddenOSRunning())
 				{
@@ -8901,6 +8947,8 @@ void ExtractCommandLine (HWND hwndDlg, wchar_t *lpszCommandLine)
 				OptionSilent,
 				OptionDynamic,
 				OptionForce,
+				OptionNoSizeCheck,
+				OptionQuickFormat,
 			};
 
 			argument args[]=
@@ -8921,6 +8969,8 @@ void ExtractCommandLine (HWND hwndDlg, wchar_t *lpszCommandLine)
 				{ OptionSilent,				L"/silent",			NULL, FALSE },
 				{ OptionDynamic,				L"/dynamic",			NULL, FALSE },
 				{ OptionForce,					L"/force",			NULL, FALSE },
+				{ OptionNoSizeCheck,			L"/nosizecheck",	NULL, FALSE },
+				{ OptionQuickFormat,			L"/quick",	NULL, FALSE },
 
 				// Internal
 				{ CommandResumeSysEncLogOn,		L"/acsysenc",		L"/a", TRUE },
@@ -9267,6 +9317,14 @@ void ExtractCommandLine (HWND hwndDlg, wchar_t *lpszCommandLine)
 
 			case OptionNoIsoCheck:
 				bDontVerifyRescueDisk = TRUE;
+				break;
+
+			case OptionNoSizeCheck:
+				bDontCheckFileContainerSize = TRUE;
+				break;
+
+			case OptionQuickFormat:
+				CmdQuickFormat = TRUE;
 				break;
 
 			case OptionHistory:
