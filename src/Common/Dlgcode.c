@@ -17,6 +17,7 @@
 #include <dbghelp.h>
 #include <dbt.h>
 #include <Setupapi.h>
+#include <aclapi.h>
 #include <fcntl.h>
 #include <io.h>
 #include <math.h>
@@ -60,6 +61,8 @@
 #include "Boot/Windows/BootCommon.h"
 #include "Progress.h"
 #include "zip.h"
+#include "rdrand.h"
+#include "jitterentropy.h"
 
 #ifdef TCMOUNT
 #include "Mount/Mount.h"
@@ -143,6 +146,7 @@ BOOL bHideWaitingDialog = FALSE;
 BOOL bCmdHideWaitingDialog = FALSE;
 BOOL bCmdHideWaitingDialogValid = FALSE;
 BOOL bUseSecureDesktop = FALSE;
+BOOL bUseLegacyMaxPasswordLength = FALSE;
 BOOL bCmdUseSecureDesktop = FALSE;
 BOOL bCmdUseSecureDesktopValid = FALSE;
 BOOL bStartOnLogon = FALSE;
@@ -213,6 +217,9 @@ CRITICAL_SECTION csVolumeIdCandidates;
 
 static std::vector<HostDevice> mountableDevices;
 static std::vector<HostDevice> rawHostDeviceList;
+
+/* Critical section used to ensure that only one thread at a time can create a secure desktop */
+CRITICAL_SECTION csSecureDesktop;
 
 HINSTANCE hInst = NULL;
 HCURSOR hCursor = NULL;
@@ -445,6 +452,7 @@ void InitGlobalLocks ()
 	InitializeCriticalSection (&csWNetCalls);
 	InitializeCriticalSection (&csMountableDevices);
 	InitializeCriticalSection (&csVolumeIdCandidates);
+	InitializeCriticalSection (&csSecureDesktop);
 }
 
 void FinalizeGlobalLocks ()
@@ -452,6 +460,7 @@ void FinalizeGlobalLocks ()
 	DeleteCriticalSection (&csWNetCalls);
 	DeleteCriticalSection (&csMountableDevices);
 	DeleteCriticalSection (&csVolumeIdCandidates);
+	DeleteCriticalSection (&csSecureDesktop);
 }
 
 void cleanup ()
@@ -1195,6 +1204,9 @@ void ToBootPwdField (HWND hwndDlg, UINT ctrlId)
 {
 	HWND hwndCtrl = GetDlgItem (hwndDlg, ctrlId);
 	WNDPROC originalwp = (WNDPROC) GetWindowLongPtrW (hwndCtrl, GWLP_USERDATA);
+
+	SendMessage (hwndCtrl, EM_LIMITTEXT, MAX_LEGACY_PASSWORD, 0);
+
 	// if ToNormalPwdField has been called before, GWLP_USERDATA already contains original WNDPROC
 	if (!originalwp)
 	{		
@@ -1221,6 +1233,7 @@ static LRESULT CALLBACK NormalPwdFieldProc (HWND hwnd, UINT message, WPARAM wPar
 				{
 					wchar_t *pchData = (wchar_t*)GlobalLock(h);
 					int txtlen = 0;
+					int dwMaxPassLen = bUseLegacyMaxPasswordLength? MAX_LEGACY_PASSWORD : MAX_PASSWORD;
 					while (*pchData)
 					{
 						if (*pchData == '\r' || *pchData == '\n')
@@ -1235,7 +1248,7 @@ static LRESULT CALLBACK NormalPwdFieldProc (HWND hwnd, UINT message, WPARAM wPar
 					if (txtlen)
 					{
 						int curLen = GetWindowTextLength (hwnd);
-						if (curLen == MAX_PASSWORD)
+						if (curLen == dwMaxPassLen)
 						{
 							EDITBALLOONTIP ebt;
 
@@ -1250,7 +1263,7 @@ static LRESULT CALLBACK NormalPwdFieldProc (HWND hwnd, UINT message, WPARAM wPar
 
 							bBlock = true;
 						}
-						else if ((txtlen + curLen) > MAX_PASSWORD)
+						else if ((txtlen + curLen) > dwMaxPassLen)
 						{
 							EDITBALLOONTIP ebt;
 
@@ -1282,6 +1295,7 @@ static LRESULT CALLBACK NormalPwdFieldProc (HWND hwnd, UINT message, WPARAM wPar
 			BYTE vkCode = LOBYTE (vk);
 			BYTE vkState = HIBYTE (vk);
 			bool ctrlPressed = (vkState & 2) && !(vkState & 4);
+			int dwMaxPassLen = bUseLegacyMaxPasswordLength? MAX_LEGACY_PASSWORD : MAX_PASSWORD;
 
 			// check if there is a selected text
 			SendMessage (hwnd,	EM_GETSEL, (WPARAM) &dwStartPos, (LPARAM) &dwEndPos);
@@ -1289,7 +1303,7 @@ static LRESULT CALLBACK NormalPwdFieldProc (HWND hwnd, UINT message, WPARAM wPar
 			if ((dwStartPos == dwEndPos) 
 				&& (vkCode != VK_DELETE) && (vkCode != VK_BACK) 
 				&& !ctrlPressed 
-				&& (GetWindowTextLength (hwnd) == MAX_PASSWORD))
+				&& (GetWindowTextLength (hwnd) == dwMaxPassLen))
 			{
 				EDITBALLOONTIP ebt;
 
@@ -1315,8 +1329,9 @@ void ToNormalPwdField (HWND hwndDlg, UINT ctrlId)
 {
 	HWND hwndCtrl = GetDlgItem (hwndDlg, ctrlId);
 	WNDPROC originalwp = (WNDPROC) GetWindowLongPtrW (hwndCtrl, GWLP_USERDATA);
+	DWORD dwMaxPassLen = bUseLegacyMaxPasswordLength? MAX_LEGACY_PASSWORD : MAX_PASSWORD;
 
-	SendMessage (hwndCtrl, EM_LIMITTEXT, MAX_PASSWORD, 0);
+	SendMessage (hwndCtrl, EM_LIMITTEXT, dwMaxPassLen, 0);
 	// only change WNDPROC if not changed already
 	if (!originalwp)
 	{
@@ -1422,7 +1437,7 @@ BOOL CALLBACK AboutDlgProc (HWND hwndDlg, UINT msg, WPARAM wParam, LPARAM lParam
 
 			// Version
 			SendMessage (GetDlgItem (hwndDlg, IDT_ABOUT_VERSION), WM_SETFONT, (WPARAM) hUserBoldFont, 0);
-			StringCbPrintfW (szTmp, sizeof(szTmp), L"VeraCrypt %s", _T(VERSION_STRING));
+			StringCbPrintfW (szTmp, sizeof(szTmp), L"VeraCrypt %s", _T(VERSION_STRING) _T(VERSION_STRING_SUFFIX));
 #ifdef _WIN64
 			StringCbCatW (szTmp, sizeof(szTmp), L"  (64-bit)");
 #else
@@ -1445,7 +1460,7 @@ BOOL CALLBACK AboutDlgProc (HWND hwndDlg, UINT msg, WPARAM wParam, LPARAM lParam
 			L"Based on TrueCrypt 7.1a, freely available at http://www.truecrypt.org/ .\r\n\r\n"
 
 			L"Portions of this software:\r\n"
-			L"Copyright \xA9 2013-2018 IDRIX. All rights reserved.\r\n"
+			L"Copyright \xA9 2013-2019 IDRIX. All rights reserved.\r\n"
 			L"Copyright \xA9 2003-2012 TrueCrypt Developers Association. All Rights Reserved.\r\n"
 			L"Copyright \xA9 1998-2000 Paul Le Roux. All Rights Reserved.\r\n"
 			L"Copyright \xA9 1998-2008 Brian Gladman. All Rights Reserved.\r\n"
@@ -1453,10 +1468,11 @@ BOOL CALLBACK AboutDlgProc (HWND hwndDlg, UINT msg, WPARAM wParam, LPARAM lParam
 			L"Copyright \xA9 2016 Disk Cryptography Services for EFI (DCS), Alex Kolotnikov.\r\n"
 			L"Copyright \xA9 1999-2017 Dieter Baron and Thomas Klausner.\r\n"
 			L"Copyright \xA9 2013, Alexey Degtyarev. All rights reserved.\r\n"
-			L"Copyright \xA9 1999-2016 Jack Lloyd. All rights reserved.\r\n\r\n"
+			L"Copyright \xA9 1999-2016 Jack Lloyd. All rights reserved.\r\n"
+			L"Copyright \xA9 2013-2018 Stephan Mueller <smueller@chronox.de>\r\n\r\n"
 
 			L"This software as a whole:\r\n"
-			L"Copyright \xA9 2013-2018 IDRIX. All rights reserved.\r\n\r\n"
+			L"Copyright \xA9 2013-2019 IDRIX. All rights reserved.\r\n\r\n"
 
 			L"An IDRIX Release");
 
@@ -2881,6 +2897,9 @@ void InitApp (HINSTANCE hInstance, wchar_t *lpszCommandLine)
 	char langId[6];	
 	InitCommonControlsPtr InitCommonControlsFn = NULL;	
 	wchar_t modPath[MAX_PATH];
+	
+	/* Protect this process memory from being accessed by non-admin users */
+	EnableProcessProtection ();
 
 	GetModuleFileNameW (NULL, modPath, ARRAYSIZE (modPath));
 
@@ -3194,6 +3213,17 @@ void InitApp (HINSTANCE hInstance, wchar_t *lpszCommandLine)
 	InitHelpFileName ();
 
 #ifndef SETUP
+#ifdef _WIN64
+	if (IsOSAtLeast (WIN_7))
+	{
+		EnableRamEncryption ((ReadDriverConfigurationFlags() & VC_DRIVER_CONFIG_ENABLE_RAM_ENCRYPTION) ? TRUE : FALSE);
+		if (IsRamEncryptionEnabled())
+		{
+			if (!InitializeSecurityParameters(GetAppRandomSeed))
+				AbortProcess("OUTOFMEMORY");
+		}
+	}
+#endif
 	if (!EncryptionThreadPoolStart (ReadEncryptionThreadPoolFreeCpuCountLimit()))
 	{
 		handleWin32Error (NULL, SRC_POS);
@@ -5724,7 +5754,7 @@ static BOOL PerformBenchmark(HWND hBenchDlg, HWND hwndDlg)
 			if (!EAInit (ci->ea, ci->master_keydata, ci->ks))
 			{
 				ci->mode = FIRST_MODE_OF_OPERATION_ID;
-				if (EAInitMode (ci))
+				if (EAInitMode (ci, ci->k2))
 				{
 					int i;
 
@@ -5745,7 +5775,7 @@ static BOOL PerformBenchmark(HWND hBenchDlg, HWND hwndDlg)
 					goto counter_error;
 
 				ci->mode = FIRST_MODE_OF_OPERATION_ID;
-				if (!EAInitMode (ci))
+				if (!EAInitMode (ci, ci->k2))
 					goto counter_error;
 
 				if (QueryPerformanceCounter (&performanceCountStart) == 0)
@@ -6931,7 +6961,7 @@ CipherTestDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
 					}
 
 					memcpy (&ci->k2, secondaryKey, sizeof (secondaryKey));
-					if (!EAInitMode (ci))
+					if (!EAInitMode (ci, ci->k2))
 					{
 						crypto_close (ci);
 						return 1;
@@ -8049,15 +8079,14 @@ retry:
 	mount.bMountReadOnly = mountOptions->ReadOnly;
 	mount.bMountRemovable = mountOptions->Removable;
 	mount.bPreserveTimestamp = mountOptions->PreserveTimestamp;
-
-	mount.bMountManager = TRUE;
+	
+	if (mountOptions->DisableMountManager)
+		mount.bMountManager = FALSE;
+	else
+		mount.bMountManager = TRUE;
 	mount.pkcs5_prf = pkcs5;
 	mount.bTrueCryptMode = truecryptMode;
 	mount.VolumePim = pim;
-
-	// Windows 2000 mount manager causes problems with remounted volumes
-	if (CurrentOSMajor == 5 && CurrentOSMinor == 0)
-		mount.bMountManager = FALSE;
 
 	wstring path = volumePath;
 	if (path.find (L"\\\\?\\") == 0)
@@ -13045,13 +13074,15 @@ void SetPim (HWND hwndDlg, UINT ctrlId, int pim)
 		SetDlgItemText (hwndDlg, ctrlId, L"");
 }
 
-BOOL GetPassword (HWND hwndDlg, UINT ctrlID, char* passValue, int bufSize, BOOL bShowError)
+BOOL GetPassword (HWND hwndDlg, UINT ctrlID, char* passValue, int bufSize, BOOL bLegacyPassword, BOOL bShowError)
 {
 	wchar_t tmp [MAX_PASSWORD + 1];
 	int utf8Len;
 	BOOL bRet = FALSE;
 
 	GetWindowText (GetDlgItem (hwndDlg, ctrlID), tmp, ARRAYSIZE (tmp));
+	if ((bLegacyPassword || bUseLegacyMaxPasswordLength) && (lstrlen (tmp) > MAX_LEGACY_PASSWORD))
+		wmemset (&tmp[MAX_LEGACY_PASSWORD], 0, MAX_PASSWORD + 1 - MAX_LEGACY_PASSWORD);
 	utf8Len = WideCharToMultiByte (CP_UTF8, 0, tmp, -1, passValue, bufSize, NULL, NULL);
 	burn (tmp, sizeof (tmp));
 	if (utf8Len > 0)
@@ -13552,6 +13583,9 @@ INT_PTR SecureDesktopDialogBoxParam(
 
 		HDESK hInputDesk = NULL;
 
+		EnterCriticalSection (&csSecureDesktop);
+		finally_do ({ LeaveCriticalSection (&csSecureDesktop); });
+
 		// wait for the input desktop to be available before switching to 
 		// secure desktop. Under Windows 10, the user session can be started
 		// in the background even before the user has authenticated and in this
@@ -13881,3 +13915,158 @@ BOOL BufferHasPattern (const unsigned char* buffer, size_t bufferLen, const void
 
 	return bRet;
 }
+
+/* Implementation borrowed from KeePassXC source code (https://github.com/keepassxreboot/keepassxc/blob/release/2.4.0/src/core/Bootstrap.cpp#L150) 
+ *
+ * Reduce current user acess rights for this process to the minimum in order to forbid non-admin users from reading the process memory.
+ */
+BOOL EnableProcessProtection()
+{
+    BOOL bSuccess = FALSE;
+
+    // Process token and user
+    HANDLE hToken = NULL;
+    PTOKEN_USER pTokenUser = NULL;
+    DWORD cbBufferSize = 0;
+
+    // Access control list
+    PACL pACL = NULL;
+    DWORD cbACL = 0;
+
+    // Open the access token associated with the calling process
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken)) {
+        goto Cleanup;
+    }
+
+    // Retrieve the token information in a TOKEN_USER structure
+    GetTokenInformation(hToken, TokenUser, NULL, 0, &cbBufferSize);
+
+    pTokenUser = (PTOKEN_USER) HeapAlloc(GetProcessHeap(), 0, cbBufferSize);
+    if (pTokenUser == NULL) {
+        goto Cleanup;
+    }
+
+    if (!GetTokenInformation(hToken, TokenUser, pTokenUser, cbBufferSize, &cbBufferSize)) {
+        goto Cleanup;
+    }
+
+    if (!IsValidSid(pTokenUser->User.Sid)) {
+        goto Cleanup;
+    }
+
+    // Calculate the amount of memory that must be allocated for the DACL
+    cbACL = sizeof(ACL) + sizeof(ACCESS_ALLOWED_ACE) + GetLengthSid(pTokenUser->User.Sid);
+
+    // Create and initialize an ACL
+    pACL = (PACL) HeapAlloc(GetProcessHeap(), 0, cbACL);
+    if (pACL == NULL) {
+        goto Cleanup;
+    }
+
+    if (!InitializeAcl(pACL, cbACL, ACL_REVISION)) {
+        goto Cleanup;
+    }
+
+    // Add allowed access control entries, everything else is denied
+    if (!AddAccessAllowedAce(
+            pACL,
+            ACL_REVISION,
+            SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE, // same as protected process
+            pTokenUser->User.Sid // pointer to the trustee's SID
+            )) {
+        goto Cleanup;
+    }
+
+    // Set discretionary access control list
+    bSuccess = (ERROR_SUCCESS == SetSecurityInfo(GetCurrentProcess(), // object handle
+                                    SE_KERNEL_OBJECT, // type of object
+                                    DACL_SECURITY_INFORMATION, // change only the objects DACL
+                                    NULL,
+                                    NULL, // do not change owner or group
+                                    pACL, // DACL specified
+                                    NULL // do not change SACL
+                    ))? TRUE: FALSE;
+
+Cleanup:
+
+    if (pACL != NULL) {
+        HeapFree(GetProcessHeap(), 0, pACL);
+    }
+    if (pTokenUser != NULL) {
+        HeapFree(GetProcessHeap(), 0, pTokenUser);
+    }
+    if (hToken != NULL) {
+        CloseHandle(hToken);
+    }
+
+    return bSuccess;
+}
+
+#if !defined(SETUP) && defined(_WIN64)
+
+#define RtlGenRandom SystemFunction036
+extern "C" BOOLEAN NTAPI RtlGenRandom(PVOID RandomBuffer, ULONG RandomBufferLength);
+
+void GetAppRandomSeed (unsigned char* pbRandSeed, size_t cbRandSeed)
+{
+	LARGE_INTEGER iSeed;
+	SYSTEMTIME sysTime;
+	byte digest[WHIRLPOOL_DIGESTSIZE];
+	WHIRLPOOL_CTX tctx;
+	size_t count;
+
+	while (cbRandSeed)
+	{	
+		WHIRLPOOL_init (&tctx);
+		// we hash current content of digest buffer which is uninitialized the first time
+		WHIRLPOOL_add (digest, WHIRLPOOL_DIGESTSIZE, &tctx);
+
+		// we use various time information as source of entropy
+		GetSystemTime (&sysTime);
+		WHIRLPOOL_add ((unsigned char *) &sysTime, sizeof(sysTime), &tctx);
+		if (QueryPerformanceCounter (&iSeed))
+			WHIRLPOOL_add ((unsigned char *) &(iSeed.QuadPart), sizeof(iSeed.QuadPart), &tctx);
+		if (QueryPerformanceFrequency (&iSeed))
+			WHIRLPOOL_add ((unsigned char *) &(iSeed.QuadPart), sizeof(iSeed.QuadPart), &tctx);
+
+		/* use Windows random generator as entropy source */
+		if (RtlGenRandom (digest, sizeof (digest)))
+			WHIRLPOOL_add (digest, sizeof(digest), &tctx);
+
+		/* use JitterEntropy library to get good quality random bytes based on CPU timing jitter */
+		if (0 == jent_entropy_init ())
+		{
+			struct rand_data *ec = jent_entropy_collector_alloc (1, 0);
+			if (ec)
+			{
+				ssize_t rndLen = jent_read_entropy (ec, (char*) digest, sizeof (digest));
+				if (rndLen > 0)
+					WHIRLPOOL_add (digest, (unsigned int) rndLen, &tctx);
+				jent_entropy_collector_free (ec);
+			}
+		}
+
+		// use RDSEED or RDRAND from CPU as source of entropy if enabled
+		if (	IsCpuRngEnabled() && 
+			(	(HasRDSEED() && RDSEED_getBytes (digest, sizeof (digest)))
+			||	(HasRDRAND() && RDRAND_getBytes (digest, sizeof (digest)))
+			))
+		{
+			WHIRLPOOL_add (digest, sizeof(digest), &tctx);
+		}
+		WHIRLPOOL_finalize (&tctx, digest);
+
+		count = VC_MIN (cbRandSeed, sizeof (digest));
+
+		// copy digest value to seed buffer
+		memcpy (pbRandSeed, digest, count);
+		cbRandSeed -= count;
+		pbRandSeed += count;
+	}
+
+	FAST_ERASE64 (digest, sizeof (digest));
+	FAST_ERASE64 (&iSeed.QuadPart, 8);
+	burn (&sysTime, sizeof(sysTime));
+	burn (&tctx, sizeof(tctx));
+}
+#endif
