@@ -7,18 +7,13 @@
 #include "charset.h"
 #include "internal.h"
 
-void read_utf8(charset_spec const *, long int, charset_state *,
-	       void (*)(void *, long int), void *);
-void write_utf8(charset_spec const *, long int,
-		charset_state *, void (*)(void *, long int), void *);
-
 /*
  * UTF-8 has no associated data, so `charset' may be ignored.
  */
 
-void read_utf8(charset_spec const *charset, long int input_chr,
-	       charset_state *state,
-	       void (*emit)(void *ctx, long int output), void *emitctx)
+static void read_utf8(charset_spec const *charset, long int input_chr,
+                      charset_state *state,
+                      void (*emit)(void *ctx, long int output), void *emitctx)
 {
     UNUSEDARG(charset);
 
@@ -186,9 +181,9 @@ void read_utf8(charset_spec const *charset, long int input_chr,
  * charset_state.
  */
 
-void write_utf8(charset_spec const *charset, long int input_chr,
-		charset_state *state,
-		void (*emit)(void *ctx, long int output), void *emitctx)
+static void write_utf8(charset_spec const *charset, long int input_chr,
+                       charset_state *state,
+                       void (*emit)(void *ctx, long int output), void *emitctx)
 {
     UNUSEDARG(charset);
     UNUSEDARG(state);
@@ -267,7 +262,7 @@ void utf8_read_test(int line, char *input, int inlen, ...)
 	}
 	if (l != str[i]) {
 	    printf("%d: char %d came out as %08x, should be %08x\n",
-		    line, i, str[i], l);
+                   line, i, str[i], (unsigned)l);
 	    total_errs++;
 	}
     }
@@ -306,7 +301,7 @@ void utf8_write_test(int line, const long *input, int inlen, ...)
 	}
 	if (l != str[i]) {
 	    printf("%d: char %d came out as %08x, should be %08x\n",
-		    line, i, str[i], l);
+                   line, i, str[i], (unsigned)l);
 	    total_errs++;
 	}
     }

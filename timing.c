@@ -148,12 +148,23 @@ unsigned long schedule_timer(int ticks, timer_fn_t fn, void *ctx)
     return when;
 }
 
+unsigned long timing_last_clock(void)
+{
+    /*
+     * Return the last value we stored in 'now'. In particular,
+     * calling this just after schedule_timer returns the value of
+     * 'now' that was used to decide when the timer you just set would
+     * go off.
+     */
+    return now;
+}
+
 /*
  * Call to run any timers whose time has reached the present.
  * Returns the time (in ticks) expected until the next timer after
  * that triggers.
  */
-int run_timers(unsigned long anow, unsigned long *next)
+bool run_timers(unsigned long anow, unsigned long *next)
 {
     struct timer *first;
 
@@ -165,7 +176,7 @@ int run_timers(unsigned long anow, unsigned long *next)
 	first = (struct timer *)index234(timers, 0);
 
 	if (!first)
-	    return FALSE;	       /* no timers remaining */
+	    return false;	       /* no timers remaining */
 
 	if (find234(timer_contexts, first->ctx, NULL) == NULL) {
 	    /*
@@ -189,7 +200,7 @@ int run_timers(unsigned long anow, unsigned long *next)
 	     * future. Return how long it has yet to go.
 	     */
 	    *next = first->now;
-	    return TRUE;
+	    return true;
 	}
     }
 }

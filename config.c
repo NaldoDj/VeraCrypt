@@ -15,7 +15,7 @@
 #define HOST_BOX_TITLE "Host Name (or IP address)"
 #define PORT_BOX_TITLE "Port"
 
-void conf_radiobutton_handler(union control *ctrl, void *dlg,
+void conf_radiobutton_handler(union control *ctrl, dlgparam *dlg,
 			      void *data, int event)
 {
     int button;
@@ -43,11 +43,39 @@ void conf_radiobutton_handler(union control *ctrl, void *dlg,
     }
 }
 
+void conf_radiobutton_bool_handler(union control *ctrl, dlgparam *dlg,
+                                   void *data, int event)
+{
+    int button;
+    Conf *conf = (Conf *)data;
+
+    /*
+     * Same as conf_radiobutton_handler, but using conf_set_bool in
+     * place of conf_set_int, because it's dealing with a bool-typed
+     * config option.
+     */
+    if (event == EVENT_REFRESH) {
+	int val = conf_get_bool(conf, ctrl->radio.context.i);
+	for (button = 0; button < ctrl->radio.nbuttons; button++)
+	    if (val == ctrl->radio.buttondata[button].i)
+		break;
+	/* We expected that `break' to happen, in all circumstances. */
+	assert(button < ctrl->radio.nbuttons);
+	dlg_radiobutton_set(ctrl, dlg, button);
+    } else if (event == EVENT_VALCHANGE) {
+	button = dlg_radiobutton_get(ctrl, dlg);
+	assert(button >= 0 && button < ctrl->radio.nbuttons);
+	conf_set_bool(conf, ctrl->radio.context.i,
+                      ctrl->radio.buttondata[button].i);
+    }
+}
+
 #define CHECKBOX_INVERT (1<<30)
-void conf_checkbox_handler(union control *ctrl, void *dlg,
+void conf_checkbox_handler(union control *ctrl, dlgparam *dlg,
 			   void *data, int event)
 {
-    int key, invert;
+    int key;
+    bool invert;
     Conf *conf = (Conf *)data;
 
     /*
@@ -57,9 +85,9 @@ void conf_checkbox_handler(union control *ctrl, void *dlg,
     key = ctrl->checkbox.context.i;
     if (key & CHECKBOX_INVERT) {
 	key &= ~CHECKBOX_INVERT;
-	invert = 1;
+	invert = true;
     } else
-	invert = 0;
+	invert = false;
 
     /*
      * C lacks a logical XOR, so the following code uses the idiom
@@ -68,14 +96,14 @@ void conf_checkbox_handler(union control *ctrl, void *dlg,
      */
 
     if (event == EVENT_REFRESH) {
-	int val = conf_get_int(conf, key);
+	bool val = conf_get_bool(conf, key);
 	dlg_checkbox_set(ctrl, dlg, (!val ^ !invert));
     } else if (event == EVENT_VALCHANGE) {
-	conf_set_int(conf, key, !dlg_checkbox_get(ctrl,dlg) ^ !invert);
+	conf_set_bool(conf, key, !dlg_checkbox_get(ctrl,dlg) ^ !invert);
     }
 }
 
-void conf_editbox_handler(union control *ctrl, void *dlg,
+void conf_editbox_handler(union control *ctrl, dlgparam *dlg,
 			  void *data, int event)
 {
     /*
@@ -124,14 +152,15 @@ void conf_editbox_handler(union control *ctrl, void *dlg,
     }
 }
 
-void conf_filesel_handler(union control *ctrl, void *dlg,
+void conf_filesel_handler(union control *ctrl, dlgparam *dlg,
 			  void *data, int event)
 {
     int key = ctrl->fileselect.context.i;
     Conf *conf = (Conf *)data;
 
     if (event == EVENT_REFRESH) {
-	dlg_filesel_set(ctrl, dlg, conf_get_filename(conf, key));
+	dlg_filesel_set(
+            ctrl, dlg, conf_get_filename(conf, key));
     } else if (event == EVENT_VALCHANGE) {
 	Filename *filename = dlg_filesel_get(ctrl, dlg);
 	conf_set_filename(conf, key, filename);
@@ -139,14 +168,15 @@ void conf_filesel_handler(union control *ctrl, void *dlg,
     }
 }
 
-void conf_fontsel_handler(union control *ctrl, void *dlg,
+void conf_fontsel_handler(union control *ctrl, dlgparam *dlg,
 			  void *data, int event)
 {
     int key = ctrl->fontselect.context.i;
     Conf *conf = (Conf *)data;
 
     if (event == EVENT_REFRESH) {
-	dlg_fontsel_set(ctrl, dlg, conf_get_fontspec(conf, key));
+	dlg_fontsel_set(
+            ctrl, dlg, conf_get_fontspec(conf, key));
     } else if (event == EVENT_VALCHANGE) {
 	FontSpec *fontspec = dlg_fontsel_get(ctrl, dlg);
 	conf_set_fontspec(conf, key, fontspec);
@@ -154,7 +184,7 @@ void conf_fontsel_handler(union control *ctrl, void *dlg,
     }
 }
 
-static void config_host_handler(union control *ctrl, void *dlg,
+static void config_host_handler(union control *ctrl, dlgparam *dlg,
 				void *data, int event)
 {
     Conf *conf = (Conf *)data;
@@ -186,7 +216,7 @@ static void config_host_handler(union control *ctrl, void *dlg,
     }
 }
 
-static void config_port_handler(union control *ctrl, void *dlg,
+static void config_port_handler(union control *ctrl, dlgparam *dlg,
 				void *data, int event)
 {
     Conf *conf = (Conf *)data;
@@ -235,7 +265,7 @@ struct hostport {
  * routines can use it to conveniently identify the protocol radio
  * buttons in order to add to them.
  */
-void config_protocolbuttons_handler(union control *ctrl, void *dlg,
+void config_protocolbuttons_handler(union control *ctrl, dlgparam *dlg,
 				    void *data, int event)
 {
     int button;
@@ -267,10 +297,10 @@ void config_protocolbuttons_handler(union control *ctrl, void *dlg,
 	conf_set_int(conf, CONF_protocol, newproto);
 
 	if (oldproto != newproto) {
-	    Backend *ob = backend_from_proto(oldproto);
-	    Backend *nb = backend_from_proto(newproto);
-	    assert(ob);
-	    assert(nb);
+            const struct BackendVtable *ovt = backend_vt_from_proto(oldproto);
+            const struct BackendVtable *nvt = backend_vt_from_proto(newproto);
+            assert(ovt);
+            assert(nvt);
 	    /* Iff the user hasn't changed the port from the old protocol's
 	     * default, update it with the new protocol's default.
 	     * (This includes a "default" of 0, implying that there is no
@@ -281,15 +311,15 @@ void config_protocolbuttons_handler(union control *ctrl, void *dlg,
 	     * getting to the protocol; we want that non-default port
 	     * to be preserved. */
 	    port = conf_get_int(conf, CONF_port);
-	    if (port == ob->default_port)
-		conf_set_int(conf, CONF_port, nb->default_port);
+            if (port == ovt->default_port)
+                conf_set_int(conf, CONF_port, nvt->default_port);
 	}
 	dlg_refresh(hp->host, dlg);
 	dlg_refresh(hp->port, dlg);
     }
 }
 
-static void loggingbuttons_handler(union control *ctrl, void *dlg,
+static void loggingbuttons_handler(union control *ctrl, dlgparam *dlg,
 				   void *data, int event)
 {
     int button;
@@ -318,7 +348,7 @@ static void loggingbuttons_handler(union control *ctrl, void *dlg,
     }
 }
 
-static void numeric_keypad_handler(union control *ctrl, void *dlg,
+static void numeric_keypad_handler(union control *ctrl, dlgparam *dlg,
 				   void *data, int event)
 {
     int button;
@@ -328,9 +358,9 @@ static void numeric_keypad_handler(union control *ctrl, void *dlg,
      * handler, but it has to handle two fields in Conf.
      */
     if (event == EVENT_REFRESH) {
-	if (conf_get_int(conf, CONF_nethack_keypad))
+	if (conf_get_bool(conf, CONF_nethack_keypad))
 	    button = 2;
-	else if (conf_get_int(conf, CONF_app_keypad))
+	else if (conf_get_bool(conf, CONF_app_keypad))
 	    button = 1;
 	else
 	    button = 0;
@@ -340,16 +370,16 @@ static void numeric_keypad_handler(union control *ctrl, void *dlg,
 	button = dlg_radiobutton_get(ctrl, dlg);
 	assert(button >= 0 && button < ctrl->radio.nbuttons);
 	if (button == 2) {
-	    conf_set_int(conf, CONF_app_keypad, FALSE);
-	    conf_set_int(conf, CONF_nethack_keypad, TRUE);
+	    conf_set_bool(conf, CONF_app_keypad, false);
+	    conf_set_bool(conf, CONF_nethack_keypad, true);
 	} else {
-	    conf_set_int(conf, CONF_app_keypad, (button != 0));
-	    conf_set_int(conf, CONF_nethack_keypad, FALSE);
+	    conf_set_bool(conf, CONF_app_keypad, (button != 0));
+	    conf_set_bool(conf, CONF_nethack_keypad, false);
 	}
     }
 }
 
-static void cipherlist_handler(union control *ctrl, void *dlg,
+static void cipherlist_handler(union control *ctrl, dlgparam *dlg,
 			       void *data, int event)
 {
     Conf *conf = (Conf *)data;
@@ -395,7 +425,7 @@ static void cipherlist_handler(union control *ctrl, void *dlg,
 }
 
 #ifndef NO_GSSAPI
-static void gsslist_handler(union control *ctrl, void *dlg,
+static void gsslist_handler(union control *ctrl, dlgparam *dlg,
 			    void *data, int event)
 {
     Conf *conf = (Conf *)data;
@@ -422,7 +452,7 @@ static void gsslist_handler(union control *ctrl, void *dlg,
 }
 #endif
 
-static void kexlist_handler(union control *ctrl, void *dlg,
+static void kexlist_handler(union control *ctrl, dlgparam *dlg,
 			    void *data, int event)
 {
     Conf *conf = (Conf *)data;
@@ -442,7 +472,7 @@ static void kexlist_handler(union control *ctrl, void *dlg,
 	/* (kexlist assumed to contain all algorithms) */
 	dlg_update_start(ctrl, dlg);
 	dlg_listbox_clear(ctrl, dlg);
-	for (i = 0; i < KEX_MAX; i++) {
+        for (i = 0; i < KEX_MAX; i++) {
 	    int k = conf_get_int_int(conf, CONF_ssh_kexlist, i);
 	    int j;
 	    const char *kstr = NULL;
@@ -460,13 +490,56 @@ static void kexlist_handler(union control *ctrl, void *dlg,
 	int i;
 
 	/* Update array to match the list box. */
-	for (i=0; i < KEX_MAX; i++)
+        for (i=0; i < KEX_MAX; i++)
 	    conf_set_int_int(conf, CONF_ssh_kexlist, i,
 			     dlg_listbox_getid(ctrl, dlg, i));
     }
 }
 
-static void printerbox_handler(union control *ctrl, void *dlg,
+static void hklist_handler(union control *ctrl, dlgparam *dlg,
+                            void *data, int event)
+{
+    Conf *conf = (Conf *)data;
+    if (event == EVENT_REFRESH) {
+        int i;
+
+        static const struct { const char *s; int k; } hks[] = {
+            { "Ed25519",               HK_ED25519 },
+            { "ECDSA",                 HK_ECDSA },
+            { "DSA",                   HK_DSA },
+            { "RSA",                   HK_RSA },
+            { "-- warn below here --", HK_WARN }
+        };
+
+        /* Set up the "host key preference" box. */
+        /* (hklist assumed to contain all algorithms) */
+        dlg_update_start(ctrl, dlg);
+        dlg_listbox_clear(ctrl, dlg);
+        for (i = 0; i < HK_MAX; i++) {
+            int k = conf_get_int_int(conf, CONF_ssh_hklist, i);
+            int j;
+            const char *kstr = NULL;
+            for (j = 0; j < lenof(hks); j++) {
+                if (hks[j].k == k) {
+                    kstr = hks[j].s;
+                    break;
+                }
+            }
+            dlg_listbox_addwithid(ctrl, dlg, kstr, k);
+        }
+        dlg_update_done(ctrl, dlg);
+
+    } else if (event == EVENT_VALCHANGE) {
+        int i;
+
+        /* Update array to match the list box. */
+        for (i=0; i < HK_MAX; i++)
+            conf_set_int_int(conf, CONF_ssh_hklist, i,
+                             dlg_listbox_getid(ctrl, dlg, i));
+    }
+}
+
+static void printerbox_handler(union control *ctrl, dlgparam *dlg,
 			       void *data, int event)
 {
     Conf *conf = (Conf *)data;
@@ -502,7 +575,7 @@ static void printerbox_handler(union control *ctrl, void *dlg,
     }
 }
 
-static void codepage_handler(union control *ctrl, void *dlg,
+static void codepage_handler(union control *ctrl, dlgparam *dlg,
 			     void *data, int event)
 {
     Conf *conf = (Conf *)data;
@@ -526,7 +599,7 @@ static void codepage_handler(union control *ctrl, void *dlg,
     }
 }
 
-static void sshbug_handler(union control *ctrl, void *dlg,
+static void sshbug_handler(union control *ctrl, dlgparam *dlg,
 			   void *data, int event)
 {
     Conf *conf = (Conf *)data;
@@ -563,14 +636,14 @@ struct sessionsaver_data {
     union control *editbox, *listbox, *loadbutton, *savebutton, *delbutton;
     union control *okbutton, *cancelbutton;
     struct sesslist sesslist;
-    int midsession;
+    bool midsession;
     char *savedsession;     /* the current contents of ssd->editbox */
 };
 
 static void sessionsaver_data_free(void *ssdv)
 {
     struct sessionsaver_data *ssd = (struct sessionsaver_data *)ssdv;
-    get_sesslist(&ssd->sesslist, FALSE);
+    get_sesslist(&ssd->sesslist, false);
     sfree(ssd->savedsession);
     sfree(ssd);
 }
@@ -580,14 +653,15 @@ static void sessionsaver_data_free(void *ssdv)
  * any, as this is done in more than one place below. Returns 0 for
  * failure.
  */
-static int load_selected_session(struct sessionsaver_data *ssd,
-				 void *dlg, Conf *conf, int *maybe_launch)
+static bool load_selected_session(
+    struct sessionsaver_data *ssd,
+    dlgparam *dlg, Conf *conf, bool *maybe_launch)
 {
     int i = dlg_listbox_index(ssd->listbox, dlg);
-    int isdef;
+    bool isdef;
     if (i < 0) {
 	dlg_beep(dlg);
-	return 0;
+	return false;
     }
     isdef = !strcmp(ssd->sesslist.sessions[i], "Default Settings");
     load_settings(ssd->sesslist.sessions[i], conf);
@@ -599,10 +673,10 @@ static int load_selected_session(struct sessionsaver_data *ssd,
     /* Restore the selection, which might have been clobbered by
      * changing the value of the edit box. */
     dlg_listbox_select(ssd->listbox, dlg, i);
-    return 1;
+    return true;
 }
 
-static void sessionsaver_handler(union control *ctrl, void *dlg,
+static void sessionsaver_handler(union control *ctrl, dlgparam *dlg,
 				 void *data, int event)
 {
     Conf *conf = (Conf *)data;
@@ -642,7 +716,7 @@ static void sessionsaver_handler(union control *ctrl, void *dlg,
 	    dlg_listbox_select(ssd->listbox, dlg, top);
 	}
     } else if (event == EVENT_ACTION) {
-	int mbl = FALSE;
+	bool mbl = false;
 	if (!ssd->midsession &&
 	    (ctrl == ssd->listbox ||
 	     (ssd->loadbutton && ctrl == ssd->loadbutton))) {
@@ -658,7 +732,7 @@ static void sessionsaver_handler(union control *ctrl, void *dlg,
 		dlg_end(dlg, 1);       /* it's all over, and succeeded */
 	    }
 	} else if (ctrl == ssd->savebutton) {
-	    int isdef = !strcmp(ssd->savedsession, "Default Settings");
+	    bool isdef = !strcmp(ssd->savedsession, "Default Settings");
 	    if (!ssd->savedsession[0]) {
 		int i = dlg_listbox_index(ssd->listbox, dlg);
 		if (i < 0) {
@@ -677,8 +751,8 @@ static void sessionsaver_handler(union control *ctrl, void *dlg,
                     sfree(errmsg);
                 }
             }
-	    get_sesslist(&ssd->sesslist, FALSE);
-	    get_sesslist(&ssd->sesslist, TRUE);
+	    get_sesslist(&ssd->sesslist, false);
+	    get_sesslist(&ssd->sesslist, true);
 	    dlg_refresh(ssd->editbox, dlg);
 	    dlg_refresh(ssd->listbox, dlg);
 	} else if (!ssd->midsession &&
@@ -688,8 +762,8 @@ static void sessionsaver_handler(union control *ctrl, void *dlg,
 		dlg_beep(dlg);
 	    } else {
 		del_settings(ssd->sesslist.sessions[i]);
-		get_sesslist(&ssd->sesslist, FALSE);
-		get_sesslist(&ssd->sesslist, TRUE);
+		get_sesslist(&ssd->sesslist, false);
+		get_sesslist(&ssd->sesslist, true);
 		dlg_refresh(ssd->listbox, dlg);
 	    }
 	} else if (ctrl == ssd->okbutton) {
@@ -708,7 +782,7 @@ static void sessionsaver_handler(union control *ctrl, void *dlg,
 	    if (dlg_last_focused(ctrl, dlg) == ssd->listbox &&
 		!conf_launchable(conf)) {
 		Conf *conf2 = conf_new();
-		int mbl = FALSE;
+		bool mbl = false;
 		if (!load_selected_session(ssd, dlg, conf2, &mbl)) {
 		    dlg_beep(dlg);
 		    conf_free(conf2);
@@ -743,7 +817,7 @@ struct charclass_data {
     union control *listbox, *editbox, *button;
 };
 
-static void charclass_handler(union control *ctrl, void *dlg,
+static void charclass_handler(union control *ctrl, dlgparam *dlg,
 			      void *data, int event)
 {
     Conf *conf = (Conf *)data;
@@ -798,13 +872,14 @@ static const char *const colours[] = {
     "ANSI White", "ANSI White Bold"
 };
 
-static void colour_handler(union control *ctrl, void *dlg,
+static void colour_handler(union control *ctrl, dlgparam *dlg,
 			    void *data, int event)
 {
     Conf *conf = (Conf *)data;
     struct colour_data *cd =
 	(struct colour_data *)ctrl->generic.context.p;
-    int update = FALSE, clear = FALSE, r, g, b;
+    bool update = false, clear = false;
+    int r, g, b;
 
     if (event == EVENT_REFRESH) {
 	if (ctrl == cd->listbox) {
@@ -814,22 +889,22 @@ static void colour_handler(union control *ctrl, void *dlg,
 	    for (i = 0; i < lenof(colours); i++)
 		dlg_listbox_add(ctrl, dlg, colours[i]);
 	    dlg_update_done(ctrl, dlg);
-	    clear = TRUE;
-	    update = TRUE;
+	    clear = true;
+	    update = true;
 	}
     } else if (event == EVENT_SELCHANGE) {
 	if (ctrl == cd->listbox) {
 	    /* The user has selected a colour. Update the RGB text. */
 	    int i = dlg_listbox_index(ctrl, dlg);
 	    if (i < 0) {
-		clear = TRUE;
+		clear = true;
 	    } else {
-		clear = FALSE;
+		clear = false;
 		r = conf_get_int_int(conf, CONF_colours, i*3+0);
 		g = conf_get_int_int(conf, CONF_colours, i*3+1);
 		b = conf_get_int_int(conf, CONF_colours, i*3+2);
 	    }
-	    update = TRUE;
+	    update = true;
 	}
     } else if (event == EVENT_VALCHANGE) {
 	if (ctrl == cd->redit || ctrl == cd->gedit || ctrl == cd->bedit) {
@@ -882,8 +957,8 @@ static void colour_handler(union control *ctrl, void *dlg,
 		conf_set_int_int(conf, CONF_colours, i*3+0, r);
 		conf_set_int_int(conf, CONF_colours, i*3+1, g);
 		conf_set_int_int(conf, CONF_colours, i*3+2, b);
-		clear = FALSE;
-		update = TRUE;
+		clear = false;
+		update = true;
 	    }
 	}
     }
@@ -903,11 +978,10 @@ static void colour_handler(union control *ctrl, void *dlg,
 }
 
 struct ttymodes_data {
-    union control *modelist, *valradio, *valbox;
-    union control *addbutton, *rembutton, *listbox;
+    union control *valradio, *valbox, *setbutton, *listbox;
 };
 
-static void ttymodes_handler(union control *ctrl, void *dlg,
+static void ttymodes_handler(union control *ctrl, dlgparam *dlg,
 			     void *data, int event)
 {
     Conf *conf = (Conf *)data;
@@ -923,69 +997,67 @@ static void ttymodes_handler(union control *ctrl, void *dlg,
 		 val != NULL;
 		 val = conf_get_str_strs(conf, CONF_ttymodes, key, &key)) {
 		char *disp = dupprintf("%s\t%s", key,
-				       (val[0] == 'A') ? "(auto)" : val+1);
+				       (val[0] == 'A') ? "(auto)" :
+				       ((val[0] == 'N') ? "(don't send)"
+							: val+1));
 		dlg_listbox_add(ctrl, dlg, disp);
 		sfree(disp);
 	    }
 	    dlg_update_done(ctrl, dlg);
-	} else if (ctrl == td->modelist) {
-	    int i;
-	    dlg_update_start(ctrl, dlg);
-	    dlg_listbox_clear(ctrl, dlg);
-	    for (i = 0; ttymodes[i]; i++)
-		dlg_listbox_add(ctrl, dlg, ttymodes[i]);
-	    dlg_listbox_select(ctrl, dlg, 0); /* *shrug* */
-	    dlg_update_done(ctrl, dlg);
 	} else if (ctrl == td->valradio) {
 	    dlg_radiobutton_set(ctrl, dlg, 0);
 	}
+    } else if (event == EVENT_SELCHANGE) {
+	if (ctrl == td->listbox) {
+	    int ind = dlg_listbox_index(td->listbox, dlg);
+	    char *val;
+	    if (ind < 0) {
+		return; /* no item selected */
+	    }
+	    val = conf_get_str_str(conf, CONF_ttymodes,
+				   conf_get_str_nthstrkey(conf, CONF_ttymodes,
+							  ind));
+	    assert(val != NULL);
+	    /* Do this first to defuse side-effects on radio buttons: */
+	    dlg_editbox_set(td->valbox, dlg, val+1);
+	    dlg_radiobutton_set(td->valradio, dlg,
+				val[0] == 'A' ? 0 : (val[0] == 'N' ? 1 : 2));
+	}
+    } else if (event == EVENT_VALCHANGE) {
+	if (ctrl == td->valbox) {
+	    /* If they're editing the text box, we assume they want its
+	     * value to be used. */
+	    dlg_radiobutton_set(td->valradio, dlg, 2);
+	}
     } else if (event == EVENT_ACTION) {
-	if (ctrl == td->addbutton) {
-	    int ind = dlg_listbox_index(td->modelist, dlg);
+	if (ctrl == td->setbutton) {
+	    int ind = dlg_listbox_index(td->listbox, dlg);
+	    const char *key;
+	    char *str, *val;
+	    char type;
+
+	    {
+                const char types[] = {'A', 'N', 'V'};
+		int button = dlg_radiobutton_get(td->valradio, dlg);
+		assert(button >= 0 && button < lenof(types));
+		type = types[button];
+	    }
+
+	    /* Construct new entry */
 	    if (ind >= 0) {
-		char type = dlg_radiobutton_get(td->valradio, dlg) ? 'V' : 'A';
-		const char *key;
-		char *str, *val;
-		/* Construct new entry */
-		key = ttymodes[ind];
-		str = dlg_editbox_get(td->valbox, dlg);
+		key = conf_get_str_nthstrkey(conf, CONF_ttymodes, ind);
+		str = (type == 'V' ? dlg_editbox_get(td->valbox, dlg)
+				   : dupstr(""));
 		val = dupprintf("%c%s", type, str);
 		sfree(str);
 		conf_set_str_str(conf, CONF_ttymodes, key, val);
 		sfree(val);
 		dlg_refresh(td->listbox, dlg);
-	    } else
+		dlg_listbox_select(td->listbox, dlg, ind);
+	    } else {
+		/* Not a multisel listbox, so this means nothing selected */
 		dlg_beep(dlg);
-	} else if (ctrl == td->rembutton) {
-	    int i = 0;
-	    char *key, *val;
-	    int multisel = dlg_listbox_index(td->listbox, dlg) < 0;
-	    for (val = conf_get_str_strs(conf, CONF_ttymodes, NULL, &key);
-		 val != NULL;
-		 val = conf_get_str_strs(conf, CONF_ttymodes, key, &key)) {
-		if (dlg_listbox_issel(td->listbox, dlg, i)) {
-		    if (!multisel) {
-			/* Populate controls with entry we're about to
-			 * delete, for ease of editing.
-			 * (If multiple entries were selected, don't
-			 * touch the controls.) */
-			int ind = 0;
-			val++;
-			while (ttymodes[ind]) {
-			    if (!strcmp(ttymodes[ind], key))
-				break;
-			    ind++;
-			}
-			dlg_listbox_select(td->modelist, dlg, ind);
-			dlg_radiobutton_set(td->valradio, dlg,
-					    (*val == 'V'));
-			dlg_editbox_set(td->valbox, dlg, val+1);
-		    }
-		    conf_del_str_str(conf, CONF_ttymodes, key);
-		}
-		i++;
 	    }
-	    dlg_refresh(td->listbox, dlg);
 	}
     }
 }
@@ -994,7 +1066,7 @@ struct environ_data {
     union control *varbox, *valbox, *addbutton, *rembutton, *listbox;
 };
 
-static void environ_handler(union control *ctrl, void *dlg,
+static void environ_handler(union control *ctrl, dlgparam *dlg,
 			    void *data, int event)
 {
     Conf *conf = (Conf *)data;
@@ -1070,7 +1142,7 @@ struct portfwd_data {
 #endif
 };
 
-static void portfwd_handler(union control *ctrl, void *dlg,
+static void portfwd_handler(union control *ctrl, dlgparam *dlg,
 			    void *data, int event)
 {
     Conf *conf = (Conf *)data;
@@ -1187,7 +1259,7 @@ static void portfwd_handler(union control *ctrl, void *dlg,
 		if (key) {
 		    static const char *const afs = "A46";
 		    static const char *const dirs = "LRD";
-		    char *afp;
+		    const char *afp;
 		    int dir;
 #ifndef NO_IPV6
 		    int idx;
@@ -1234,7 +1306,7 @@ struct manual_hostkey_data {
     union control *addbutton, *rembutton, *listbox, *keybox;
 };
 
-static void manual_hostkey_handler(union control *ctrl, void *dlg,
+static void manual_hostkey_handler(union control *ctrl, dlgparam *dlg,
                                    void *data, int event)
 {
     Conf *conf = (Conf *)data;
@@ -1297,7 +1369,106 @@ static void manual_hostkey_handler(union control *ctrl, void *dlg,
     }
 }
 
-void setup_config_box(struct controlbox *b, int midsession,
+static void clipboard_selector_handler(union control *ctrl, dlgparam *dlg,
+                                       void *data, int event)
+{
+    Conf *conf = (Conf *)data;
+    int setting = ctrl->generic.context.i;
+#ifdef NAMED_CLIPBOARDS
+    int strsetting = ctrl->editbox.context2.i;
+#endif
+
+    static const struct {
+        const char *name;
+        int id;
+    } options[] = {
+        {"No action", CLIPUI_NONE},
+        {CLIPNAME_IMPLICIT, CLIPUI_IMPLICIT},
+        {CLIPNAME_EXPLICIT, CLIPUI_EXPLICIT},
+    };
+
+    if (event == EVENT_REFRESH) {
+        int i, val = conf_get_int(conf, setting);
+
+        dlg_update_start(ctrl, dlg);
+        dlg_listbox_clear(ctrl, dlg);
+
+#ifdef NAMED_CLIPBOARDS
+        for (i = 0; i < lenof(options); i++)
+            dlg_listbox_add(ctrl, dlg, options[i].name);
+        if (val == CLIPUI_CUSTOM) {
+            const char *sval = conf_get_str(conf, strsetting);
+            for (i = 0; i < lenof(options); i++)
+                if (!strcmp(sval, options[i].name))
+                    break;             /* needs escaping */
+            if (i < lenof(options) || sval[0] == '=') {
+                char *escaped = dupcat("=", sval, (const char *)NULL);
+                dlg_editbox_set(ctrl, dlg, escaped);
+                sfree(escaped);
+            } else {
+                dlg_editbox_set(ctrl, dlg, sval);
+            }
+        } else {
+            dlg_editbox_set(ctrl, dlg, options[0].name); /* fallback */
+            for (i = 0; i < lenof(options); i++)
+                if (val == options[i].id)
+                    dlg_editbox_set(ctrl, dlg, options[i].name);
+        }
+#else
+        for (i = 0; i < lenof(options); i++)
+            dlg_listbox_addwithid(ctrl, dlg, options[i].name, options[i].id);
+        dlg_listbox_select(ctrl, dlg, 0); /* fallback */
+        for (i = 0; i < lenof(options); i++)
+            if (val == options[i].id)
+                dlg_listbox_select(ctrl, dlg, i);
+#endif
+	dlg_update_done(ctrl, dlg);
+    } else if (event == EVENT_SELCHANGE
+#ifdef NAMED_CLIPBOARDS
+               || event == EVENT_VALCHANGE
+#endif
+        ) {
+#ifdef NAMED_CLIPBOARDS
+        const char *sval = dlg_editbox_get(ctrl, dlg);
+        int i;
+
+        for (i = 0; i < lenof(options); i++)
+            if (!strcmp(sval, options[i].name)) {
+                conf_set_int(conf, setting, options[i].id);
+                conf_set_str(conf, strsetting, "");
+                break;
+            }
+        if (i == lenof(options)) {
+            conf_set_int(conf, setting, CLIPUI_CUSTOM);
+            if (sval[0] == '=')
+                sval++;
+            conf_set_str(conf, strsetting, sval);
+        }
+#else
+        int index = dlg_listbox_index(ctrl, dlg);
+        if (index >= 0) {
+            int val = dlg_listbox_getid(ctrl, dlg, index);
+            conf_set_int(conf, setting, val);
+        }
+#endif
+    }
+}
+
+static void clipboard_control(struct controlset *s, const char *label,
+                              char shortcut, int percentage, intorptr helpctx,
+                              int setting, int strsetting)
+{
+#ifdef NAMED_CLIPBOARDS
+    ctrl_combobox(s, label, shortcut, percentage, helpctx,
+                  clipboard_selector_handler, I(setting), I(strsetting));
+#else
+    /* strsetting isn't needed in this case */
+    ctrl_droplist(s, label, shortcut, percentage, helpctx,
+                  clipboard_selector_handler, I(setting));
+#endif
+}
+
+void setup_config_box(struct controlbox *b, bool midsession,
 		      int protocol, int protcfginfo)
 {
     struct controlset *s;
@@ -1329,11 +1500,11 @@ void setup_config_box(struct controlbox *b, int midsession,
 				    (char)(midsession ? 'a' : 'o'),
 				    HELPCTX(no_help),
 				    sessionsaver_handler, P(ssd));
-    ssd->okbutton->button.isdefault = TRUE;
+    ssd->okbutton->button.isdefault = true;
     ssd->okbutton->generic.column = 3;
     ssd->cancelbutton = ctrl_pushbutton(s, "Cancel", 'c', HELPCTX(no_help),
 					sessionsaver_handler, P(ssd));
-    ssd->cancelbutton->button.iscancel = TRUE;
+    ssd->cancelbutton->button.iscancel = true;
     ssd->cancelbutton->generic.column = 4;
     /* We carefully don't close the 5-column part, so that platform-
      * specific add-ons can put extra buttons alongside Open and Cancel. */
@@ -1364,7 +1535,7 @@ void setup_config_box(struct controlbox *b, int midsession,
 	hp->port = c;
 	ctrl_columns(s, 1, 100);
 
-	if (!backend_from_proto(PROT_SSH)) {
+        if (!backend_vt_from_proto(PROT_SSH)) {
 	    ctrl_radiobuttons(s, "Connection type:", NO_SHORTCUT, 3,
 			      HELPCTX(session_hostname),
 			      config_protocolbuttons_handler, P(hp),
@@ -1391,7 +1562,7 @@ void setup_config_box(struct controlbox *b, int midsession,
 		    midsession ? "Save the current session settings" :
 		    "Load, save or delete a stored session");
     ctrl_columns(s, 2, 75, 25);
-    get_sesslist(&ssd->sesslist, TRUE);
+    get_sesslist(&ssd->sesslist, true);
     ssd->editbox = ctrl_editbox(s, "Saved Sessions", 'e', 100,
 				HELPCTX(session_saved),
 				sessionsaver_handler, P(ssd), P(NULL));
@@ -1455,7 +1626,7 @@ void setup_config_box(struct controlbox *b, int midsession,
     {
 	const char *sshlogname, *sshrawlogname;
 	if ((midsession && protocol == PROT_SSH) ||
-	    (!midsession && backend_from_proto(PROT_SSH))) {
+            (!midsession && backend_vt_from_proto(PROT_SSH))) {
 	    sshlogname = "SSH packets";
 	    sshrawlogname = "SSH packets and raw data";
         } else {
@@ -1474,7 +1645,7 @@ void setup_config_box(struct controlbox *b, int midsession,
 			  NULL);
     }
     ctrl_filesel(s, "Log file name:", 'f',
-		 NULL, TRUE, "Select session log file name",
+		 NULL, true, "Select session log file name",
 		 HELPCTX(logging_filename),
 		 conf_filesel_handler, I(CONF_logfilename));
     ctrl_text(s, "(Log file name can contain &Y, &M, &D for date,"
@@ -1489,9 +1660,12 @@ void setup_config_box(struct controlbox *b, int midsession,
     ctrl_checkbox(s, "Flush log file frequently", 'u',
 		 HELPCTX(logging_flush),
 		 conf_checkbox_handler, I(CONF_logflush));
+    ctrl_checkbox(s, "Include header", 'i',
+		 HELPCTX(logging_header),
+		 conf_checkbox_handler, I(CONF_logheader));
 
     if ((midsession && protocol == PROT_SSH) ||
-	(!midsession && backend_from_proto(PROT_SSH))) {
+        (!midsession && backend_vt_from_proto(PROT_SSH))) {
 	s = ctrl_getset(b, "Session/Logging", "ssh",
 			"Options specific to SSH packet logging");
 	ctrl_checkbox(s, "Omit known password fields", 'k',
@@ -1559,14 +1733,14 @@ void setup_config_box(struct controlbox *b, int midsession,
 		    "Change the sequences sent by:");
     ctrl_radiobuttons(s, "The Backspace key", 'b', 2,
 		      HELPCTX(keyboard_backspace),
-		      conf_radiobutton_handler,
+		      conf_radiobutton_bool_handler,
 		      I(CONF_bksp_is_delete),
 		      "Control-H", I(0), "Control-? (127)", I(1), NULL);
     ctrl_radiobuttons(s, "The Home and End keys", 'e', 2,
 		      HELPCTX(keyboard_homeend),
-		      conf_radiobutton_handler,
+		      conf_radiobutton_bool_handler,
 		      I(CONF_rxvt_homeend),
-		      "Standard", I(0), "rxvt", I(1), NULL);
+		      "Standard", I(false), "rxvt", I(true), NULL);
     ctrl_radiobuttons(s, "The Function keys and keypad", 'f', 3,
 		      HELPCTX(keyboard_funkeys),
 		      conf_radiobutton_handler,
@@ -1578,7 +1752,7 @@ void setup_config_box(struct controlbox *b, int midsession,
 		    "Application keypad settings:");
     ctrl_radiobuttons(s, "Initial state of cursor keys:", 'r', 3,
 		      HELPCTX(keyboard_appcursor),
-		      conf_radiobutton_handler,
+		      conf_radiobutton_bool_handler,
 		      I(CONF_app_cursor),
 		      "Normal", I(0), "Application", I(1), NULL);
     ctrl_radiobuttons(s, "Initial state of numeric keypad:", 'n', 3,
@@ -1647,6 +1821,10 @@ void setup_config_box(struct controlbox *b, int midsession,
 		  HELPCTX(features_retitle),
 		  conf_checkbox_handler,
 		  I(CONF_no_remote_wintitle));
+    ctrl_checkbox(s, "Disable remote-controlled clearing of scrollback", 'e',
+		  HELPCTX(features_clearscroll),
+		  conf_checkbox_handler,
+		  I(CONF_no_remote_clearscroll));
     ctrl_radiobuttons(s, "Response to remote title query (SECURITY):", 'q', 3,
 		      HELPCTX(features_qtitle),
 		      conf_radiobutton_handler,
@@ -1796,6 +1974,9 @@ void setup_config_box(struct controlbox *b, int midsession,
     ctrl_checkbox(s, "Copy and paste line drawing characters as lqqqk",'d',
 		  HELPCTX(selection_linedraw),
 		  conf_checkbox_handler, I(CONF_rawcnp));
+    ctrl_checkbox(s, "Enable VT100 line drawing even in UTF-8 mode",'8',
+                  HELPCTX(translation_utf8linedraw),
+                  conf_checkbox_handler, I(CONF_utf8linedraw));
 
     /*
      * The Window/Selection panel.
@@ -1811,17 +1992,45 @@ void setup_config_box(struct controlbox *b, int midsession,
 		      "Default selection mode (Alt+drag does the other one):",
 		      NO_SHORTCUT, 2,
 		      HELPCTX(selection_rect),
-		      conf_radiobutton_handler,
+		      conf_radiobutton_bool_handler,
 		      I(CONF_rect_select),
-		      "Normal", 'n', I(0),
-		      "Rectangular block", 'r', I(1), NULL);
+		      "Normal", 'n', I(false),
+		      "Rectangular block", 'r', I(true), NULL);
 
-    s = ctrl_getset(b, "Window/Selection", "charclass",
-		    "Control the select-one-word-at-a-time mode");
+    s = ctrl_getset(b, "Window/Selection", "clipboards",
+                    "Assign copy/paste actions to clipboards");
+    ctrl_checkbox(s, "Auto-copy selected text to "
+                  CLIPNAME_EXPLICIT_OBJECT,
+                  NO_SHORTCUT, HELPCTX(selection_autocopy),
+                  conf_checkbox_handler, I(CONF_mouseautocopy));
+    clipboard_control(s, "Mouse paste action:", NO_SHORTCUT, 60,
+                      HELPCTX(selection_clipactions),
+                      CONF_mousepaste, CONF_mousepaste_custom);
+    clipboard_control(s, "{Ctrl,Shift} + Ins:", NO_SHORTCUT, 60,
+                      HELPCTX(selection_clipactions),
+                      CONF_ctrlshiftins, CONF_ctrlshiftins_custom);
+    clipboard_control(s, "Ctrl + Shift + {C,V}:", NO_SHORTCUT, 60,
+                      HELPCTX(selection_clipactions),
+                      CONF_ctrlshiftcv, CONF_ctrlshiftcv_custom);
+
+    s = ctrl_getset(b, "Window/Selection", "paste",
+                    "Control pasting of text from clipboard to terminal");
+    ctrl_checkbox(s, "Permit control characters in pasted text",
+                  NO_SHORTCUT, HELPCTX(selection_pastectrl),
+                  conf_checkbox_handler, I(CONF_paste_controls));
+
+    /*
+     * The Window/Selection/Copy panel.
+     */
+    ctrl_settitle(b, "Window/Selection/Copy",
+                  "Options controlling copying from terminal to clipboard");
+
+    s = ctrl_getset(b, "Window/Selection/Copy", "charclass",
+		    "Classes of character that group together");
     ccd = (struct charclass_data *)
 	ctrl_alloc(b, sizeof(struct charclass_data));
     ccd->listbox = ctrl_listbox(s, "Character classes:", 'e',
-				HELPCTX(selection_charclasses),
+				HELPCTX(copy_charclasses),
 				charclass_handler, P(ccd));
     ccd->listbox->listbox.multisel = 1;
     ccd->listbox->listbox.ncols = 4;
@@ -1832,11 +2041,11 @@ void setup_config_box(struct controlbox *b, int midsession,
     ccd->listbox->listbox.percentages[3] = 40;
     ctrl_columns(s, 2, 67, 33);
     ccd->editbox = ctrl_editbox(s, "Set to class", 't', 50,
-				HELPCTX(selection_charclasses),
+				HELPCTX(copy_charclasses),
 				charclass_handler, P(ccd), P(NULL));
     ccd->editbox->generic.column = 0;
     ccd->button = ctrl_pushbutton(s, "Set", 's',
-				  HELPCTX(selection_charclasses),
+				  HELPCTX(copy_charclasses),
 				  charclass_handler, P(ccd));
     ccd->button->generic.column = 1;
     ctrl_columns(s, 1, 100);
@@ -1854,6 +2063,9 @@ void setup_config_box(struct controlbox *b, int midsession,
     ctrl_checkbox(s, "Allow terminal to use xterm 256-colour mode", '2',
 		  HELPCTX(colours_xterm256), conf_checkbox_handler,
 		  I(CONF_xterm_256_colour));
+    ctrl_checkbox(s, "Allow terminal to use 24-bit colours", '4',
+		  HELPCTX(colours_truecolour), conf_checkbox_handler,
+		  I(CONF_true_colour));
     ctrl_radiobuttons(s, "Indicate bolded text by changing:", 'b', 3,
                       HELPCTX(colours_bold),
                       conf_radiobutton_handler, I(CONF_bold_style),
@@ -1930,7 +2142,7 @@ void setup_config_box(struct controlbox *b, int midsession,
 #endif
 
 	    {
-		const char *label = backend_from_proto(PROT_SSH) ?
+                const char *label = backend_vt_from_proto(PROT_SSH) ?
 		    "Logical name of remote host (e.g. for SSH key lookup):" :
 		    "Logical name of remote host:";
 		s = ctrl_getset(b, "Connection", "identity",
@@ -1962,10 +2174,10 @@ void setup_config_box(struct controlbox *b, int midsession,
 		sfree(user);
 		ctrl_radiobuttons(s, "When username is not specified:", 'n', 4,
 				  HELPCTX(connection_username_from_env),
-				  conf_radiobutton_handler,
+				  conf_radiobutton_bool_handler,
 				  I(CONF_username_from_env),
-				  "Prompt", I(FALSE),
-				  userlabel, I(TRUE),
+				  "Prompt", I(false),
+				  userlabel, I(true),
 				  NULL);
 		sfree(userlabel);
 	    }
@@ -2067,11 +2279,20 @@ void setup_config_box(struct controlbox *b, int midsession,
 			 HELPCTX(proxy_auth),
 			 conf_editbox_handler,
 			 I(CONF_proxy_password), I(1));
-	c->editbox.password = 1;
+	c->editbox.password = true;
 	ctrl_editbox(s, "Telnet command", 'm', 100,
 		     HELPCTX(proxy_command),
 		     conf_editbox_handler,
 		     I(CONF_proxy_telnet_command), I(1));
+
+	ctrl_radiobuttons(s, "Print proxy diagnostics "
+                          "in the terminal window", 'r', 5,
+			  HELPCTX(proxy_logging),
+			  conf_radiobutton_handler,
+			  I(CONF_proxy_log_to_term),
+			  "No", I(FORCE_OFF),
+			  "Yes", I(FORCE_ON),
+			  "Only until session starts", I(AUTO), NULL);
     }
 
     /*
@@ -2092,15 +2313,15 @@ void setup_config_box(struct controlbox *b, int midsession,
 	    ctrl_radiobuttons(s, "Handling of OLD_ENVIRON ambiguity:",
 			      NO_SHORTCUT, 2,
 			      HELPCTX(telnet_oldenviron),
-			      conf_radiobutton_handler,
+			      conf_radiobutton_bool_handler,
 			      I(CONF_rfc_environ),
-			      "BSD (commonplace)", 'b', I(0),
-			      "RFC 1408 (unusual)", 'f', I(1), NULL);
+			      "BSD (commonplace)", 'b', I(false),
+			      "RFC 1408 (unusual)", 'f', I(true), NULL);
 	    ctrl_radiobuttons(s, "Telnet negotiation mode:", 't', 2,
 			      HELPCTX(telnet_passive),
-			      conf_radiobutton_handler,
+			      conf_radiobutton_bool_handler,
 			      I(CONF_passive_telnet),
-			      "Passive", I(1), "Active", I(0), NULL);
+			      "Passive", I(true), "Active", I(false), NULL);
 	}
 	ctrl_checkbox(s, "Keyboard sends Telnet special commands", 'k',
 		      HELPCTX(telnet_specialkeys),
@@ -2133,7 +2354,8 @@ void setup_config_box(struct controlbox *b, int midsession,
      * when we're not doing SSH.
      */
 
-    if (backend_from_proto(PROT_SSH) && (!midsession || protocol == PROT_SSH)) {
+    if (backend_vt_from_proto(PROT_SSH) &&
+        (!midsession || protocol == PROT_SSH)) {
 
 	/*
 	 * The Connection/SSH panel.
@@ -2196,14 +2418,12 @@ void setup_config_box(struct controlbox *b, int midsession,
 	if (!midsession) {
 	    s = ctrl_getset(b, "Connection/SSH", "protocol", "Protocol options");
 
-	    ctrl_radiobuttons(s, "Preferred SSH protocol version:", NO_SHORTCUT, 4,
+	    ctrl_radiobuttons(s, "SSH protocol version:", NO_SHORTCUT, 2,
 			      HELPCTX(ssh_protocol),
 			      conf_radiobutton_handler,
 			      I(CONF_sshprot),
-			      "1 only", 'l', I(0),
-			      "1", '1', I(1),
-			      "2", '2', I(2),
-			      "2 only", 'y', I(3), NULL);
+			      "2", '2', I(3),
+			      "1 (INSECURE)", '1', I(0), NULL);
 	}
 
 	/*
@@ -2221,7 +2441,11 @@ void setup_config_box(struct controlbox *b, int midsession,
 	    c = ctrl_draglist(s, "Algorithm selection policy:", 's',
 			      HELPCTX(ssh_kexlist),
 			      kexlist_handler, P(NULL));
-	    c->listbox.height = 5;
+            c->listbox.height = KEX_MAX;
+	    ctrl_checkbox(s, "Attempt GSSAPI key exchange",
+			  'k', HELPCTX(ssh_gssapi),
+			  conf_checkbox_handler,
+			  I(CONF_try_gssapi_kex));
 
 	    s = ctrl_getset(b, "Connection/SSH/Kex", "repeat",
 			    "Options controlling key re-exchange");
@@ -2231,6 +2455,11 @@ void setup_config_box(struct controlbox *b, int midsession,
 			 conf_editbox_handler,
 			 I(CONF_ssh_rekey_time),
 			 I(-1));
+            ctrl_editbox(s, "Minutes between GSS checks (0 for never)", NO_SHORTCUT, 20,
+                         HELPCTX(ssh_kex_repeat),
+                         conf_editbox_handler,
+                         I(CONF_gssapirekey),
+                         I(-1));
 	    ctrl_editbox(s, "Max data before rekey (0 for no limit)", 'x', 20,
 			 HELPCTX(ssh_kex_repeat),
 			 conf_editbox_handler,
@@ -2241,12 +2470,27 @@ void setup_config_box(struct controlbox *b, int midsession,
 	}
 
 	/*
+	 * The 'Connection/SSH/Host keys' panel.
+	 */
+	if (protcfginfo != 1 && protcfginfo != -1) {
+	    ctrl_settitle(b, "Connection/SSH/Host keys",
+			  "Options controlling SSH host keys");
+
+	    s = ctrl_getset(b, "Connection/SSH/Host keys", "main",
+			    "Host key algorithm preference");
+	    c = ctrl_draglist(s, "Algorithm selection policy:", 's',
+			      HELPCTX(ssh_hklist),
+			      hklist_handler, P(NULL));
+	    c->listbox.height = 5;
+	}
+
+	/*
 	 * Manual host key configuration is irrelevant mid-session,
 	 * as we enforce that the host key for rekeys is the
 	 * same as that used at the start of the session.
 	 */
 	if (!midsession) {
-	    s = ctrl_getset(b, "Connection/SSH/Kex", "hostkeys",
+	    s = ctrl_getset(b, "Connection/SSH/Host keys", "hostkeys",
 			    "Manually configure host keys for this connection");
 
             ctrl_columns(s, 2, 75, 25);
@@ -2261,7 +2505,7 @@ void setup_config_box(struct controlbox *b, int midsession,
                                             HELPCTX(ssh_kex_manual_hostkeys),
                                             manual_hostkey_handler, P(mh));
             mh->rembutton->generic.column = 1;
-            mh->rembutton->generic.tabdelay = 1;
+            mh->rembutton->generic.tabdelay = true;
             mh->listbox = ctrl_listbox(s, NULL, NO_SHORTCUT,
                                        HELPCTX(ssh_kex_manual_hostkeys),
                                        manual_hostkey_handler, P(mh));
@@ -2270,7 +2514,7 @@ void setup_config_box(struct controlbox *b, int midsession,
              * it become really unhelpful if a horizontal scrollbar
              * appears, so we suppress that. */
             mh->listbox->listbox.height = 2;
-            mh->listbox->listbox.hscroll = FALSE;
+            mh->listbox->listbox.hscroll = false;
             ctrl_tabdelay(s, mh->rembutton);
 	    mh->keybox = ctrl_editbox(s, "Key", 'k', 80,
                                       HELPCTX(ssh_kex_manual_hostkeys),
@@ -2312,14 +2556,14 @@ void setup_config_box(struct controlbox *b, int midsession,
 			  "Options controlling SSH authentication");
 
 	    s = ctrl_getset(b, "Connection/SSH/Auth", "main", NULL);
-	    ctrl_checkbox(s, "Bypass authentication entirely (SSH-2 only)", 'b',
-			  HELPCTX(ssh_auth_bypass),
-			  conf_checkbox_handler,
-			  I(CONF_ssh_no_userauth));
 	    ctrl_checkbox(s, "Display pre-authentication banner (SSH-2 only)",
 			  'd', HELPCTX(ssh_auth_banner),
 			  conf_checkbox_handler,
 			  I(CONF_ssh_show_banner));
+	    ctrl_checkbox(s, "Bypass authentication entirely (SSH-2 only)", 'b',
+			  HELPCTX(ssh_auth_bypass),
+			  conf_checkbox_handler,
+			  I(CONF_ssh_no_userauth));
 
 	    s = ctrl_getset(b, "Connection/SSH/Auth", "methods",
 			    "Authentication methods");
@@ -2346,7 +2590,7 @@ void setup_config_box(struct controlbox *b, int midsession,
 			  conf_checkbox_handler,
 			  I(CONF_change_username));
 	    ctrl_filesel(s, "Private key file for authentication:", 'k',
-			 FILTER_KEY_FILES, FALSE, "Select private key file",
+			 FILTER_KEY_FILES, false, "Select private key file",
 			 HELPCTX(ssh_auth_privkey),
 			 conf_filesel_handler, I(CONF_keyfile));
 
@@ -2363,6 +2607,11 @@ void setup_config_box(struct controlbox *b, int midsession,
 			  't', HELPCTX(ssh_gssapi),
 			  conf_checkbox_handler,
 			  I(CONF_try_gssapi_auth));
+
+	    ctrl_checkbox(s, "Attempt GSSAPI key exchange (SSH-2 only)",
+			  'k', HELPCTX(ssh_gssapi),
+			  conf_checkbox_handler,
+			  I(CONF_try_gssapi_kex));
 
 	    ctrl_checkbox(s, "Allow GSSAPI credential delegation", 'l',
 			  HELPCTX(ssh_gssapi_delegation),
@@ -2398,7 +2647,7 @@ void setup_config_box(struct controlbox *b, int midsession,
 		 */
 
 		ctrl_filesel(s, "User-supplied GSSAPI library path:", 's',
-			     FILTER_DYNLIB_FILES, FALSE, "Select library file",
+			     FILTER_DYNLIB_FILES, false, "Select library file",
 			     HELPCTX(ssh_gssapi_libraries),
 			     conf_filesel_handler,
 			     I(CONF_ssh_gss_custom));
@@ -2422,54 +2671,40 @@ void setup_config_box(struct controlbox *b, int midsession,
 			    "Terminal modes");
 	    td = (struct ttymodes_data *)
 		ctrl_alloc(b, sizeof(struct ttymodes_data));
-	    ctrl_columns(s, 2, 75, 25);
-	    c = ctrl_text(s, "Terminal modes to send:", HELPCTX(ssh_ttymodes));
-	    c->generic.column = 0;
-	    td->rembutton = ctrl_pushbutton(s, "Remove", 'r',
-					    HELPCTX(ssh_ttymodes),
-					    ttymodes_handler, P(td));
-	    td->rembutton->generic.column = 1;
-	    td->rembutton->generic.tabdelay = 1;
-	    ctrl_columns(s, 1, 100);
+	    ctrl_text(s, "Terminal modes to send:", HELPCTX(ssh_ttymodes));
 	    td->listbox = ctrl_listbox(s, NULL, NO_SHORTCUT,
 				       HELPCTX(ssh_ttymodes),
 				       ttymodes_handler, P(td));
-	    td->listbox->listbox.multisel = 1;
-	    td->listbox->listbox.height = 4;
+	    td->listbox->listbox.height = 8;
 	    td->listbox->listbox.ncols = 2;
 	    td->listbox->listbox.percentages = snewn(2, int);
 	    td->listbox->listbox.percentages[0] = 40;
 	    td->listbox->listbox.percentages[1] = 60;
-	    ctrl_tabdelay(s, td->rembutton);
 	    ctrl_columns(s, 2, 75, 25);
-	    td->modelist = ctrl_droplist(s, "Mode:", 'm', 67,
-					 HELPCTX(ssh_ttymodes),
-					 ttymodes_handler, P(td));
-	    td->modelist->generic.column = 0;
-	    td->addbutton = ctrl_pushbutton(s, "Add", 'd',
+	    c = ctrl_text(s, "For selected mode, send:", HELPCTX(ssh_ttymodes));
+	    c->generic.column = 0;
+	    td->setbutton = ctrl_pushbutton(s, "Set", 's',
 					    HELPCTX(ssh_ttymodes),
 					    ttymodes_handler, P(td));
-	    td->addbutton->generic.column = 1;
-	    td->addbutton->generic.tabdelay = 1;
+	    td->setbutton->generic.column = 1;
+	    td->setbutton->generic.tabdelay = true;
 	    ctrl_columns(s, 1, 100);	    /* column break */
 	    /* Bit of a hack to get the value radio buttons and
 	     * edit-box on the same row. */
-	    ctrl_columns(s, 3, 25, 50, 25);
-	    c = ctrl_text(s, "Value:", HELPCTX(ssh_ttymodes));
-	    c->generic.column = 0;
-	    td->valradio = ctrl_radiobuttons(s, NULL, NO_SHORTCUT, 2,
+	    ctrl_columns(s, 2, 75, 25);
+	    td->valradio = ctrl_radiobuttons(s, NULL, NO_SHORTCUT, 3,
 					     HELPCTX(ssh_ttymodes),
 					     ttymodes_handler, P(td),
 					     "Auto", NO_SHORTCUT, P(NULL),
+					     "Nothing", NO_SHORTCUT, P(NULL),
 					     "This:", NO_SHORTCUT, P(NULL),
 					     NULL);
-	    td->valradio->generic.column = 1;
+	    td->valradio->generic.column = 0;
 	    td->valbox = ctrl_editbox(s, NULL, NO_SHORTCUT, 100,
 				      HELPCTX(ssh_ttymodes),
 				      ttymodes_handler, P(td), P(NULL));
-	    td->valbox->generic.column = 2;
-	    ctrl_tabdelay(s, td->addbutton);
-
+	    td->valbox->generic.column = 1;
+	    ctrl_tabdelay(s, td->setbutton);
 	}
 
 	if (!midsession) {
@@ -2521,7 +2756,7 @@ void setup_config_box(struct controlbox *b, int midsession,
 					 HELPCTX(ssh_tunnels_portfwd),
 					 portfwd_handler, P(pfd));
 	pfd->rembutton->generic.column = 2;
-	pfd->rembutton->generic.tabdelay = 1;
+	pfd->rembutton->generic.tabdelay = true;
 	pfd->listbox = ctrl_listbox(s, NULL, NO_SHORTCUT,
 				    HELPCTX(ssh_tunnels_portfwd),
 				    portfwd_handler, P(pfd));
@@ -2538,7 +2773,7 @@ void setup_config_box(struct controlbox *b, int midsession,
 					 HELPCTX(ssh_tunnels_portfwd),
 					 portfwd_handler, P(pfd));
 	pfd->addbutton->generic.column = 2;
-	pfd->addbutton->generic.tabdelay = 1;
+	pfd->addbutton->generic.tabdelay = true;
 	pfd->sourcebox = ctrl_editbox(s, "Source port", 's', 40,
 				      HELPCTX(ssh_tunnels_portfwd),
 				      portfwd_handler, P(pfd), P(NULL));
@@ -2575,27 +2810,21 @@ void setup_config_box(struct controlbox *b, int midsession,
 
 	    s = ctrl_getset(b, "Connection/SSH/Bugs", "main",
 			    "Detection of known bugs in SSH servers");
-	    ctrl_droplist(s, "Chokes on SSH-1 ignore messages", 'i', 20,
-			  HELPCTX(ssh_bugs_ignore1),
-			  sshbug_handler, I(CONF_sshbug_ignore1));
-	    ctrl_droplist(s, "Refuses all SSH-1 password camouflage", 's', 20,
-			  HELPCTX(ssh_bugs_plainpw1),
-			  sshbug_handler, I(CONF_sshbug_plainpw1));
-	    ctrl_droplist(s, "Chokes on SSH-1 RSA authentication", 'r', 20,
-			  HELPCTX(ssh_bugs_rsa1),
-			  sshbug_handler, I(CONF_sshbug_rsa1));
 	    ctrl_droplist(s, "Chokes on SSH-2 ignore messages", '2', 20,
 			  HELPCTX(ssh_bugs_ignore2),
 			  sshbug_handler, I(CONF_sshbug_ignore2));
+	    ctrl_droplist(s, "Handles SSH-2 key re-exchange badly", 'k', 20,
+			  HELPCTX(ssh_bugs_rekey2),
+			  sshbug_handler, I(CONF_sshbug_rekey2));
 	    ctrl_droplist(s, "Chokes on PuTTY's SSH-2 'winadj' requests", 'j',
                           20, HELPCTX(ssh_bugs_winadj),
 			  sshbug_handler, I(CONF_sshbug_winadj));
-	    ctrl_droplist(s, "Miscomputes SSH-2 HMAC keys", 'm', 20,
-			  HELPCTX(ssh_bugs_hmac2),
-			  sshbug_handler, I(CONF_sshbug_hmac2));
-	    ctrl_droplist(s, "Miscomputes SSH-2 encryption keys", 'e', 20,
-			  HELPCTX(ssh_bugs_derivekey2),
-			  sshbug_handler, I(CONF_sshbug_derivekey2));
+	    ctrl_droplist(s, "Replies to requests on closed channels", 'q', 20,
+			  HELPCTX(ssh_bugs_chanreq),
+			  sshbug_handler, I(CONF_sshbug_chanreq));
+	    ctrl_droplist(s, "Ignores SSH-2 maximum packet size", 'x', 20,
+			  HELPCTX(ssh_bugs_maxpkt2),
+			  sshbug_handler, I(CONF_sshbug_maxpkt2));
 
 	    ctrl_settitle(b, "Connection/SSH/More bugs",
 			  "Further workarounds for SSH server bugs");
@@ -2605,21 +2834,27 @@ void setup_config_box(struct controlbox *b, int midsession,
 	    ctrl_droplist(s, "Requires padding on SSH-2 RSA signatures", 'p', 20,
 			  HELPCTX(ssh_bugs_rsapad2),
 			  sshbug_handler, I(CONF_sshbug_rsapad2));
-	    ctrl_droplist(s, "Misuses the session ID in SSH-2 PK auth", 'n', 20,
-			  HELPCTX(ssh_bugs_pksessid2),
-			  sshbug_handler, I(CONF_sshbug_pksessid2));
-	    ctrl_droplist(s, "Handles SSH-2 key re-exchange badly", 'k', 20,
-			  HELPCTX(ssh_bugs_rekey2),
-			  sshbug_handler, I(CONF_sshbug_rekey2));
-	    ctrl_droplist(s, "Ignores SSH-2 maximum packet size", 'x', 20,
-			  HELPCTX(ssh_bugs_maxpkt2),
-			  sshbug_handler, I(CONF_sshbug_maxpkt2));
 	    ctrl_droplist(s, "Only supports pre-RFC4419 SSH-2 DH GEX", 'd', 20,
 			  HELPCTX(ssh_bugs_oldgex2),
 			  sshbug_handler, I(CONF_sshbug_oldgex2));
-	    ctrl_droplist(s, "Replies to requests on closed channels", 'q', 20,
-			  HELPCTX(ssh_bugs_chanreq),
-			  sshbug_handler, I(CONF_sshbug_chanreq));
+	    ctrl_droplist(s, "Miscomputes SSH-2 HMAC keys", 'm', 20,
+			  HELPCTX(ssh_bugs_hmac2),
+			  sshbug_handler, I(CONF_sshbug_hmac2));
+	    ctrl_droplist(s, "Misuses the session ID in SSH-2 PK auth", 'n', 20,
+			  HELPCTX(ssh_bugs_pksessid2),
+			  sshbug_handler, I(CONF_sshbug_pksessid2));
+	    ctrl_droplist(s, "Miscomputes SSH-2 encryption keys", 'e', 20,
+			  HELPCTX(ssh_bugs_derivekey2),
+			  sshbug_handler, I(CONF_sshbug_derivekey2));
+	    ctrl_droplist(s, "Chokes on SSH-1 ignore messages", 'i', 20,
+			  HELPCTX(ssh_bugs_ignore1),
+			  sshbug_handler, I(CONF_sshbug_ignore1));
+	    ctrl_droplist(s, "Refuses all SSH-1 password camouflage", 's', 20,
+			  HELPCTX(ssh_bugs_plainpw1),
+			  sshbug_handler, I(CONF_sshbug_plainpw1));
+	    ctrl_droplist(s, "Chokes on SSH-1 RSA authentication", 'r', 20,
+			  HELPCTX(ssh_bugs_rsa1),
+			  sshbug_handler, I(CONF_sshbug_rsa1));
 	}
     }
 }
