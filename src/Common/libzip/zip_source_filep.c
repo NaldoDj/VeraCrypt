@@ -1,6 +1,6 @@
 /*
   zip_source_filep.c -- create data source from FILE *
-  Copyright (C) 1999-2017 Dieter Baron and Thomas Klausner
+  Copyright (C) 1999-2019 Dieter Baron and Thomas Klausner
 
   This file is part of libzip, a library to manipulate ZIP archives.
   The authors can be contacted at <libzip@nih.at>
@@ -31,9 +31,11 @@
   IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/types.h>
 #include <sys/stat.h>
 
 #include "zipint.h"
@@ -51,28 +53,6 @@
 #include <linux/fs.h>
 #include <sys/ioctl.h>
 #define CAN_CLONE
-#endif
-
-#ifdef _WIN32
-/* WIN32 needs <fcntl.h> for _O_BINARY */
-#include <fcntl.h>
-#endif
-
-/* Windows sys/types.h does not provide these */
-#ifndef S_ISREG
-#define S_ISREG(m) (((m)&S_IFMT) == S_IFREG)
-#endif
-#if defined(S_IXUSR) && defined(S_IRWXG) && defined(S_IRWXO)
-#define _SAFE_MASK (S_IXUSR | S_IRWXG | S_IRWXO)
-#elif defined(_S_IWRITE)
-#define _SAFE_MASK (_S_IWRITE)
-#else
-#error do not know safe values for umask, please report this
-#endif
-
-#ifdef _MSC_VER
-/* MSVC doesn't have mode_t */
-typedef int mode_t;
 #endif
 
 struct read_file {
@@ -98,6 +78,7 @@ static int create_temp_output(struct read_file *ctx);
 #ifdef CAN_CLONE
 static zip_int64_t create_temp_output_cloning(struct read_file *ctx, zip_uint64_t offset);
 #endif
+static FILE *_zip_fopen(const char *name, bool writeable);
 static int _zip_fseek_u(FILE *f, zip_uint64_t offset, int whence, zip_error_t *error);
 static int _zip_fseek(FILE *f, zip_int64_t offset, int whence, zip_error_t *error);
 
@@ -224,6 +205,7 @@ _zip_source_file_or_p(const char *fname, FILE *file, zip_uint64_t start, zip_int
 	}
     }
 
+    ctx->supports |= ZIP_SOURCE_MAKE_COMMAND_BITMASK(ZIP_SOURCE_ACCEPT_EMPTY);
 #ifdef CAN_CLONE
     if (ctx->supports & ZIP_SOURCE_MAKE_COMMAND_BITMASK(ZIP_SOURCE_BEGIN_WRITE)) {
 	ctx->supports |= ZIP_SOURCE_MAKE_COMMAND_BITMASK(ZIP_SOURCE_BEGIN_WRITE_CLONING);
@@ -244,23 +226,29 @@ static int
 create_temp_output(struct read_file *ctx) {
     char *temp;
     int tfd;
-    mode_t mask;
+    int mode;
     FILE *tfp;
+    struct stat st;
 
     if ((temp = (char *)malloc(strlen(ctx->fname) + 8)) == NULL) {
 	zip_error_set(&ctx->error, ZIP_ER_MEMORY, 0);
 	return -1;
     }
+
+    if (stat(ctx->fname, &st) == 0) {
+	mode = st.st_mode;
+    }
+    else {
+	mode = -1;
+    }
+
     sprintf(temp, "%s.XXXXXX", ctx->fname);
 
-    mask = umask(_SAFE_MASK);
-    if ((tfd = mkstemp(temp)) == -1) {
+    if ((tfd = _zip_mkstempm(temp, mode)) == -1) {
 	zip_error_set(&ctx->error, ZIP_ER_TMPOPEN, errno);
-	umask(mask);
 	free(temp);
 	return -1;
     }
-    umask(mask);
 
     if ((tfp = fdopen(tfd, "r+b")) == NULL) {
 	zip_error_set(&ctx->error, ZIP_ER_TMPOPEN, errno);
@@ -269,14 +257,6 @@ create_temp_output(struct read_file *ctx) {
 	free(temp);
 	return -1;
     }
-
-#ifdef _WIN32
-    /*
-     According to Pierre Joye, Windows in some environments per
-     default creates text files, so force binary mode.
-     */
-    _setmode(_fileno(tfp), _O_BINARY);
-#endif
 
     ctx->fout = tfp;
     ctx->tmpname = temp;
@@ -315,7 +295,7 @@ zip_int64_t static create_temp_output_cloning(struct read_file *ctx, zip_uint64_
 	free(temp);
 	return -1;
     }
-    if ((tfp = fopen(temp, "r+b")) == NULL) {
+    if ((tfp = _zip_fopen(temp, true)) == NULL) {
 	zip_error_set(&ctx->error, ZIP_ER_TMPOPEN, errno);
 	(void)remove(temp);
 	free(temp);
@@ -395,12 +375,19 @@ read_file(void *state, void *data, zip_uint64_t len, zip_source_cmd_t cmd) {
     buf = (char *)data;
 
     switch (cmd) {
+    case ZIP_SOURCE_ACCEPT_EMPTY:
+	return 0;
+
     case ZIP_SOURCE_BEGIN_WRITE:
+#ifdef _WIN32
+	return -1;
+#else
 	if (ctx->fname == NULL) {
 	    zip_error_set(&ctx->error, ZIP_ER_OPNOTSUPP, 0);
 	    return -1;
 	}
 	return create_temp_output(ctx);
+#endif
 
 #ifdef CAN_CLONE
     case ZIP_SOURCE_BEGIN_WRITE_CLONING:
@@ -411,9 +398,14 @@ read_file(void *state, void *data, zip_uint64_t len, zip_source_cmd_t cmd) {
 	return create_temp_output_cloning(ctx, len);
 #endif
 
-    case ZIP_SOURCE_COMMIT_WRITE: {
-	mode_t mask;
+    case ZIP_SOURCE_CLOSE:
+	if (ctx->fname) {
+	    fclose(ctx->f);
+	    ctx->f = NULL;
+	}
+	return 0;
 
+    case ZIP_SOURCE_COMMIT_WRITE: {
 	if (fclose(ctx->fout) < 0) {
 	    ctx->fout = NULL;
 	    zip_error_set(&ctx->error, ZIP_ER_WRITE, errno);
@@ -423,21 +415,10 @@ read_file(void *state, void *data, zip_uint64_t len, zip_source_cmd_t cmd) {
 	    zip_error_set(&ctx->error, ZIP_ER_RENAME, errno);
 	    return -1;
 	}
-	mask = umask(022);
-	umask(mask);
-	/* not much we can do if chmod fails except make the whole commit fail */
-	(void)chmod(ctx->fname, 0666 & ~mask);
 	free(ctx->tmpname);
 	ctx->tmpname = NULL;
 	return 0;
     }
-
-    case ZIP_SOURCE_CLOSE:
-	if (ctx->fname) {
-	    fclose(ctx->f);
-	    ctx->f = NULL;
-	}
-	return 0;
 
     case ZIP_SOURCE_ERROR:
 	return zip_error_to_data(&ctx->error, data, len);
@@ -452,7 +433,7 @@ read_file(void *state, void *data, zip_uint64_t len, zip_source_cmd_t cmd) {
 
     case ZIP_SOURCE_OPEN:
 	if (ctx->fname) {
-	    if ((ctx->f = fopen(ctx->fname, "rb")) == NULL) {
+	    if ((ctx->f = _zip_fopen(ctx->fname, false)) == NULL) {
 		zip_error_set(&ctx->error, ZIP_ER_OPEN, errno);
 		return -1;
 	    }
@@ -648,4 +629,35 @@ _zip_fseek(FILE *f, zip_int64_t offset, int whence, zip_error_t *error) {
 	return -1;
     }
     return 0;
+}
+
+
+/*
+ * fopen replacement that sets the close-on-exec flag
+ * some implementations support an fopen 'e' flag for that,
+ * but e.g. macOS doesn't.
+ */
+static FILE *
+_zip_fopen(const char *name, bool writeable)
+{
+    int fd;
+    int flags;
+    FILE *fp;
+
+    flags = O_CLOEXEC;
+    if (writeable) {
+	flags |= O_RDWR;
+    }
+    else {
+	flags |= O_RDONLY;
+    }
+
+    /* mode argument needed on Windows */
+    if ((fd = open(name, flags, 0666)) < 0) {
+	return NULL;
+    }
+    if ((fp = fdopen(fd, writeable ? "r+b" : "rb")) == NULL) {
+	return NULL;
+    }
+    return fp;
 }

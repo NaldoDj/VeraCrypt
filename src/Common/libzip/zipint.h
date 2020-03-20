@@ -3,7 +3,7 @@
 
 /*
   zipint.h -- internal declarations.
-  Copyright (C) 1999-2017 Dieter Baron and Thomas Klausner
+  Copyright (C) 1999-2020 Dieter Baron and Thomas Klausner
 
   This file is part of libzip, a library to manipulate ZIP archives.
   The authors can be contacted at <libzip@nih.at>
@@ -39,6 +39,10 @@
 #endif
 
 #include "compat.h"
+
+#ifdef ZIP_ALLOCATE_BUFFER
+#include <stdlib.h>
+#endif
 
 #include <zlib.h>
 
@@ -146,6 +150,9 @@ extern zip_compression_algorithm_t zip_algorithm_bzip2_compress;
 extern zip_compression_algorithm_t zip_algorithm_bzip2_decompress;
 extern zip_compression_algorithm_t zip_algorithm_deflate_compress;
 extern zip_compression_algorithm_t zip_algorithm_deflate_decompress;
+extern zip_compression_algorithm_t zip_algorithm_xz_compress;
+extern zip_compression_algorithm_t zip_algorithm_xz_decompress;
+
 
 bool zip_compression_method_supported(zip_int32_t method, bool compress);
 
@@ -367,6 +374,23 @@ struct zip_string {
 };
 
 
+/* byte array */
+
+/* For performance, we usually keep 8k byte arrays on the stack.
+   However, there are (embedded) systems with a stack size of 12k;
+   for those, use malloc()/free() */
+
+#ifdef ZIP_ALLOCATE_BUFFER
+#define DEFINE_BYTE_ARRAY(buf, size)	zip_uint8_t *buf
+#define byte_array_init(buf, size)	(((buf) = (zip_uint8_t *)malloc(size)) != NULL)
+#define byte_array_fini(buf)	(free(buf))
+#else
+#define DEFINE_BYTE_ARRAY(buf, size)	zip_uint8_t buf[size]
+#define byte_array_init(buf, size)	(1)
+#define byte_array_fini(buf)	((void)0)
+#endif
+
+
 /* bounds checked access to memory buffer */
 
 struct zip_buffer {
@@ -447,6 +471,7 @@ void _zip_cdir_free(zip_cdir_t *);
 bool _zip_cdir_grow(zip_cdir_t *cd, zip_uint64_t additional_entries, zip_error_t *error);
 zip_cdir_t *_zip_cdir_new(zip_uint64_t, zip_error_t *);
 zip_int64_t _zip_cdir_write(zip_t *za, const zip_filelist_t *filelist, zip_uint64_t survivors);
+time_t _zip_d2u_time(zip_uint16_t, zip_uint16_t);
 void _zip_deregister_source(zip_t *za, zip_source_t *src);
 
 zip_dirent_t *_zip_dirent_clone(const zip_dirent_t *);
@@ -502,16 +527,19 @@ zip_hash_t *_zip_hash_new(zip_error_t *error);
 bool _zip_hash_reserve_capacity(zip_hash_t *hash, zip_uint64_t capacity, zip_error_t *error);
 bool _zip_hash_revert(zip_hash_t *hash, zip_error_t *error);
 
+int _zip_mkstempm(char *path, int mode);
+
 zip_t *_zip_open(zip_source_t *, unsigned int, zip_error_t *);
 
 void _zip_progress_end(zip_progress_t *progress);
 void _zip_progress_free(zip_progress_t *progress);
-zip_progress_t *_zip_progress_new(zip_t *za, double precision, zip_progress_callback callback, void (*ud_free)(void *), void *ud);
-void _zip_progress_start(zip_progress_t *progress);
-void _zip_progress_subrange(zip_progress_t *progress, double start, double end);
-void _zip_progress_update(zip_progress_t *progress, double value);
+int _zip_progress_start(zip_progress_t *progress);
+int _zip_progress_subrange(zip_progress_t *progress, double start, double end);
+int _zip_progress_update(zip_progress_t *progress, double value);
 
-ZIP_EXTERN bool zip_random(zip_uint8_t *buffer, zip_uint16_t length);
+/* this symbol is extern so it can be overridden for regression testing */
+ZIP_EXTERN bool zip_secure_random(zip_uint8_t *buffer, zip_uint16_t length);
+zip_uint32_t zip_random_uint32(void);
 
 int _zip_read(zip_source_t *src, zip_uint8_t *data, zip_uint64_t length, zip_error_t *error);
 int _zip_read_at_offset(zip_source_t *src, zip_uint64_t offset, unsigned char *b, size_t length, zip_error_t *error);
@@ -522,6 +550,7 @@ int _zip_register_source(zip_t *za, zip_source_t *src);
 
 void _zip_set_open_error(int *zep, const zip_error_t *err, int ze);
 
+bool zip_source_accept_empty(zip_source_t *src);
 zip_int64_t _zip_source_call(zip_source_t *src, void *data, zip_uint64_t length, zip_source_cmd_t command);
 bool _zip_source_eof(zip_source_t *);
 zip_source_t *_zip_source_file_or_p(const char *, FILE *, zip_uint64_t, zip_int64_t, const zip_stat_t *, zip_error_t *error);

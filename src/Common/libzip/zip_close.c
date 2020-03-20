@@ -1,6 +1,6 @@
 /*
   zip_close.c -- close zip archive and update changes
-  Copyright (C) 1999-2017 Dieter Baron and Thomas Klausner
+  Copyright (C) 1999-2020 Dieter Baron and Thomas Klausner
 
   This file is part of libzip, a library to manipulate ZIP archives.
   The authors can be contacted at <libzip@nih.at>
@@ -73,8 +73,10 @@ zip_close(zip_t *za) {
     if (survivors == 0) {
 	if ((za->open_flags & ZIP_TRUNCATE) || changed) {
 	    if (zip_source_remove(za->src) < 0) {
-		_zip_error_set_from_source(&za->error, za->src);
-		return -1;
+		if (!((zip_error_code_zip(zip_source_error(za->src)) == ZIP_ER_REMOVE) && (zip_error_code_system(zip_source_error(za->src)) == ENOENT))) {
+		    _zip_error_set_from_source(&za->error, za->src);
+		    return -1;
+		}
 	    }
 	}
 	zip_discard(za);
@@ -158,14 +160,23 @@ zip_close(zip_t *za) {
 	}
     }
 
-    _zip_progress_start(za->progress);
+    if (_zip_progress_start(za->progress) != 0) {
+	zip_error_set(&za->error, ZIP_ER_CANCELLED, 0);
+	zip_source_rollback_write(za->src);
+	free(filelist);
+	return -1;
+    }
     error = 0;
     for (j = 0; j < survivors; j++) {
 	int new_data;
 	zip_entry_t *entry;
 	zip_dirent_t *de;
 
-	_zip_progress_subrange(za->progress, (double)j / (double)survivors, (double)(j + 1) / (double)survivors);
+	if (_zip_progress_subrange(za->progress, (double)j / (double)survivors, (double)(j + 1) / (double)survivors) != 0) {
+	    zip_error_set(&za->error, ZIP_ER_CANCELLED, 0);
+	    error = 1;
+	    break;
+	}
 
 	i = filelist[j].idx;
 	entry = za->entry + i;
@@ -256,9 +267,8 @@ zip_close(zip_t *za) {
 	    _zip_error_set_from_source(&za->error, za->src);
 	    error = 1;
 	}
+	_zip_progress_end(za->progress);
     }
-
-    _zip_progress_end(za->progress);
 
     if (error) {
 	zip_source_rollback_write(za->src);
@@ -520,32 +530,43 @@ add_data(zip_t *za, zip_source_t *src, zip_dirent_t *de) {
 
 static int
 copy_data(zip_t *za, zip_uint64_t len) {
-    zip_uint8_t buf[BUFSIZE];
+    DEFINE_BYTE_ARRAY(buf, BUFSIZE);
     size_t n;
     double total = (double)len;
 
+    if (!byte_array_init(buf, BUFSIZE)) {
+	zip_error_set(&za->error, ZIP_ER_MEMORY, 0);
+	return -1;
+    }
+
     while (len > 0) {
-	n = len > sizeof(buf) ? sizeof(buf) : len;
+	n = len > BUFSIZE ? BUFSIZE : len;
 	if (_zip_read(za->src, buf, n, &za->error) < 0) {
+	    byte_array_fini(buf);
 	    return -1;
 	}
 
 	if (_zip_write(za, buf, n) < 0) {
+	    byte_array_fini(buf);
 	    return -1;
 	}
 
 	len -= n;
 
-	_zip_progress_update(za->progress, (total - (double)len) / total);
+	if (_zip_progress_update(za->progress, (total - (double)len) / total) != 0) {
+	    zip_error_set(&za->error, ZIP_ER_CANCELLED, 0);
+	    return -1;
+	}
     }
 
+    byte_array_fini(buf);
     return 0;
 }
 
 
 static int
 copy_source(zip_t *za, zip_source_t *src, zip_int64_t data_length) {
-    zip_uint8_t buf[BUFSIZE];
+    DEFINE_BYTE_ARRAY(buf, BUFSIZE);
     zip_int64_t n, current;
     int ret;
 
@@ -554,16 +575,25 @@ copy_source(zip_t *za, zip_source_t *src, zip_int64_t data_length) {
 	return -1;
     }
 
+    if (!byte_array_init(buf, BUFSIZE)) {
+	zip_error_set(&za->error, ZIP_ER_MEMORY, 0);
+	return -1;
+    }
+
     ret = 0;
     current = 0;
-    while ((n = zip_source_read(src, buf, sizeof(buf))) > 0) {
+    while ((n = zip_source_read(src, buf, BUFSIZE)) > 0) {
 	if (_zip_write(za, buf, (zip_uint64_t)n) < 0) {
 	    ret = -1;
 	    break;
 	}
-	if (n == sizeof(buf) && za->progress && data_length > 0) {
+	if (n == BUFSIZE && za->progress && data_length > 0) {
 	    current += n;
-	    _zip_progress_update(za->progress, (double)current / (double)data_length);
+	    if (_zip_progress_update(za->progress, (double)current / (double)data_length) != 0) {
+		zip_error_set(&za->error, ZIP_ER_CANCELLED, 0);
+		ret = -1;
+		break;
+	    }
 	}
     }
 
@@ -571,6 +601,8 @@ copy_source(zip_t *za, zip_source_t *src, zip_int64_t data_length) {
 	_zip_error_set_from_source(&za->error, src);
 	ret = -1;
     }
+
+    byte_array_fini(buf);
 
     zip_source_close(src);
 
