@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 *.o
 *.pyc
 .dirstamp
@@ -153,3 +154,23 @@
 /windows/*.msi
 /windows/*.wixobj
 /windows/*.wixpdb
+=======
+# For those using Visual Studio Code for development
+.vscode/
+
+# VC Linux build artifacts
+*.o
+*.o0
+*.d
+*.a
+*.bmp.h
+*.xml.h
+*.txt.h
+*.h.gch
+src/Main/veracrypt
+
+# wxWidgets Linux build artifacts
+src/wxrelease
+src/wxdebug
+
+>>>>>>> eaf400b088c147042457a15bd4a3d44941e86cb0
