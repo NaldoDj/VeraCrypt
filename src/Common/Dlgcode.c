@@ -5787,6 +5787,10 @@ static BOOL PerformBenchmark(HWND hBenchDlg, HWND hwndDlg)
 				if (EAInitMode (ci, ci->k2))
 				{
 					int i;
+#ifdef _WIN64
+					if (IsRamEncryptionEnabled ())
+						VcProtectKeys (ci, VcGetEncryptionID (ci));
+#endif
 
 					for (i = 0; i < 10; i++)
 					{
@@ -5807,6 +5811,11 @@ static BOOL PerformBenchmark(HWND hBenchDlg, HWND hwndDlg)
 				ci->mode = FIRST_MODE_OF_OPERATION_ID;
 				if (!EAInitMode (ci, ci->k2))
 					goto counter_error;
+
+#ifdef _WIN64
+				if (IsRamEncryptionEnabled ())
+					VcProtectKeys (ci, VcGetEncryptionID (ci));
+#endif
 
 				if (QueryPerformanceCounter (&performanceCountStart) == 0)
 					goto counter_error;
@@ -5999,7 +6008,7 @@ BOOL CALLBACK BenchmarkDlgProc (HWND hwndDlg, UINT msg, WPARAM wParam, LPARAM lP
 
 
 			uint32 driverConfig = ReadDriverConfigurationFlags();
-			int isAesHwSupported = is_aes_hw_cpu_supported();
+			int isAesHwSupported = HasAESNI();
 
 			SetDlgItemTextW (hwndDlg, IDC_HW_AES, (wstring (L" ") + (GetString (isAesHwSupported ? ((driverConfig & TC_DRIVER_CONFIG_DISABLE_HARDWARE_ENCRYPTION) ? "UISTR_DISABLED" : "UISTR_YES") : "NOT_APPLICABLE_OR_NOT_AVAILABLE"))).c_str());
 
