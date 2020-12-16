@@ -1,6 +1,6 @@
 PATH=%PATH%;%WSDK81%\bin\x86;C:\Program Files\7-Zip;C:\Program Files (x86)\7-Zip
 
-set VC_VERSION=1.24-Update7
+set VC_VERSION=1.24-Update8
 set SIGNINGPATH=%~dp0
 cd %SIGNINGPATH%
 
@@ -64,5 +64,8 @@ timeout /t 10
 
 rem sign using SHA-256
 signtool sign /v /sha1 04141E4EA6D9343CEC994F6C099DC09BDD8937C9 /ac GlobalSign_SHA256_EV_CodeSigning_CA.cer /as /fd sha256 /tr http://rfc3161timestamp.globalsign.com/advanced /td SHA256 "..\Release\Setup Files\VeraCrypt Setup %VC_VERSION%.exe" "..\Release\Setup Files\VeraCrypt Portable %VC_VERSION%.exe"
+
+move "..\Release\Setup Files\VeraCrypt Setup %VC_VERSION%.exe" "..\Release\Setup Files\VeraCrypt Legacy Setup %VC_VERSION%.exe"
+move "..\Release\Setup Files\VeraCrypt Portable %VC_VERSION%.exe" "..\Release\Setup Files\VeraCrypt Legacy Portable %VC_VERSION%.exe"
 
 pause

@@ -389,6 +389,16 @@ static unsigned char gpbSha1CodeSignCertFingerprint[64] = {
 	0xE9, 0x65, 0xA5, 0x61
 };
 
+static unsigned char gpbSha256CodeSignCertFingerprint[64] = {
+	0x88, 0x60, 0xC4, 0x26, 0x6D, 0x42, 0x59, 0x1B, 0xDF, 0x89, 0x0F, 0x1A,
+	0x2F, 0x70, 0x8D, 0xBB, 0xC0, 0xF0, 0x03, 0x1F, 0x37, 0x11, 0xF9, 0x24,
+	0x78, 0xDF, 0xD3, 0x60, 0xFB, 0xF3, 0xDC, 0xCA, 0x0D, 0x95, 0x06, 0x6A,
+	0x5E, 0xAD, 0x5C, 0xA3, 0x3E, 0x75, 0x55, 0x96, 0x7B, 0xD1, 0x0D, 0xC1,
+	0x00, 0xFE, 0xA0, 0x95, 0x13, 0x23, 0x20, 0x63, 0x26, 0x57, 0xFA, 0x6C,
+	0xE4, 0x27, 0xF8, 0x36
+};
+
+
 typedef HRESULT (WINAPI *SHGETKNOWNFOLDERPATH) (
   _In_     REFKNOWNFOLDERID rfid,
   _In_     DWORD            dwFlags,
@@ -1209,6 +1219,44 @@ void EnableCloseButton (HWND hwndDlg)
 	EnableMenuItem (GetSystemMenu (hwndDlg, FALSE), SC_CLOSE, MF_BYCOMMAND | MF_ENABLED);
 }
 
+void HandlePasswordEditWmChar (HWND hwnd, WPARAM wParam)
+{
+	DWORD dwStartPos = 0, dwEndPos = 0;
+	short vk = VkKeyScanW ((WCHAR) wParam);
+	BYTE vkCode = LOBYTE (vk);
+	BYTE vkState = HIBYTE (vk);
+	bool ctrlPressed = (vkState & 2) && !(vkState & 4);
+	int dwMaxPassLen = (int) SendMessage (hwnd, EM_GETLIMITTEXT, 0, 0);
+
+	// check if there is a selected text
+	SendMessage (hwnd,	EM_GETSEL, (WPARAM) &dwStartPos, (LPARAM) &dwEndPos);
+
+	if ((dwStartPos == dwEndPos) 
+		&& (vkCode != VK_DELETE) && (vkCode != VK_BACK) 
+		&& !ctrlPressed 
+		&& (GetWindowTextLength (hwnd) == dwMaxPassLen))
+	{
+		EDITBALLOONTIP ebt;
+		DWORD dwTextSize = (DWORD) wcslen (GetString ("PASSWORD_MAXLENGTH_REACHED")) + 16;
+		WCHAR* szErrorText = (WCHAR*) malloc (dwTextSize * sizeof (WCHAR));
+
+		StringCchPrintf (szErrorText, dwTextSize, GetString ("PASSWORD_MAXLENGTH_REACHED"), dwMaxPassLen);
+
+		ebt.cbStruct = sizeof( EDITBALLOONTIP );
+		ebt.pszText = szErrorText;
+		ebt.pszTitle = lpszTitle;
+		ebt.ttiIcon = TTI_ERROR_LARGE;    // tooltip warning icon
+
+		SendMessage(hwnd, EM_SHOWBALLOONTIP, 0, (LPARAM)&ebt);
+
+		MessageBeep (0xFFFFFFFF);
+
+		free (szErrorText);
+	}
+	else
+		SendMessage(hwnd, EM_HIDEBALLOONTIP, 0, 0);
+}
+
 // Protects an input field from having its content updated by a Paste action (call ToBootPwdField() to use this).
 static LRESULT CALLBACK BootPwdFieldProc (HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
@@ -1218,6 +1266,9 @@ static LRESULT CALLBACK BootPwdFieldProc (HWND hwnd, UINT message, WPARAM wParam
 	{
 	case WM_PASTE:
 		return 1;
+	case WM_CHAR:
+		HandlePasswordEditWmChar (hwnd, wParam);
+		break;
 	}
 
 	return CallWindowProcW (wp, hwnd, message, wParam, lParam);
@@ -1278,9 +1329,13 @@ static LRESULT CALLBACK NormalPwdFieldProc (HWND hwnd, UINT message, WPARAM wPar
 						if (curLen == dwMaxPassLen)
 						{
 							EDITBALLOONTIP ebt;
+							DWORD dwTextSize = (DWORD) wcslen (GetString ("PASSWORD_MAXLENGTH_REACHED")) + 16;
+							WCHAR* szErrorText = (WCHAR*) malloc (dwTextSize * sizeof (WCHAR));
+
+							StringCchPrintf (szErrorText, dwTextSize, GetString ("PASSWORD_MAXLENGTH_REACHED"), dwMaxPassLen);
 
 							ebt.cbStruct = sizeof( EDITBALLOONTIP );
-							ebt.pszText = GetString ("PASSWORD_MAXLENGTH_REACHED");
+							ebt.pszText = szErrorText;
 							ebt.pszTitle = lpszTitle;
 							ebt.ttiIcon = TTI_ERROR_LARGE;    // tooltip warning icon
 
@@ -1288,20 +1343,28 @@ static LRESULT CALLBACK NormalPwdFieldProc (HWND hwnd, UINT message, WPARAM wPar
 
 							MessageBeep (0xFFFFFFFF);
 
+							free (szErrorText);
+
 							bBlock = true;
 						}
 						else if ((txtlen + curLen) > dwMaxPassLen)
 						{
 							EDITBALLOONTIP ebt;
+							DWORD dwTextSize = (DWORD) wcslen (GetString ("PASSWORD_PASTED_TRUNCATED")) + 16;
+							WCHAR* szErrorText = (WCHAR*) malloc (dwTextSize * sizeof (WCHAR));
+
+							StringCchPrintf (szErrorText, dwTextSize, GetString ("PASSWORD_PASTED_TRUNCATED"), dwMaxPassLen);
 
 							ebt.cbStruct = sizeof( EDITBALLOONTIP );
-							ebt.pszText = GetString ("PASSWORD_PASTED_TRUNCATED");
+							ebt.pszText = szErrorText;
 							ebt.pszTitle = lpszTitle;
 							ebt.ttiIcon = TTI_WARNING_LARGE;    // tooltip warning icon
 
 							SendMessage(hwnd, EM_SHOWBALLOONTIP, 0, (LPARAM)&ebt);
 
 							MessageBeep (0xFFFFFFFF);
+
+							free (szErrorText);
 						}
 						else
 							 SendMessage(hwnd, EM_HIDEBALLOONTIP, 0, 0);
@@ -1316,36 +1379,7 @@ static LRESULT CALLBACK NormalPwdFieldProc (HWND hwnd, UINT message, WPARAM wPar
 		}
 		break;
 	case WM_CHAR:
-		{
-			DWORD dwStartPos = 0, dwEndPos = 0;
-			short vk = VkKeyScanW ((WCHAR) wParam);
-			BYTE vkCode = LOBYTE (vk);
-			BYTE vkState = HIBYTE (vk);
-			bool ctrlPressed = (vkState & 2) && !(vkState & 4);
-			int dwMaxPassLen = bUseLegacyMaxPasswordLength? MAX_LEGACY_PASSWORD : MAX_PASSWORD;
-
-			// check if there is a selected text
-			SendMessage (hwnd,	EM_GETSEL, (WPARAM) &dwStartPos, (LPARAM) &dwEndPos);
-
-			if ((dwStartPos == dwEndPos) 
-				&& (vkCode != VK_DELETE) && (vkCode != VK_BACK) 
-				&& !ctrlPressed 
-				&& (GetWindowTextLength (hwnd) == dwMaxPassLen))
-			{
-				EDITBALLOONTIP ebt;
-
-				ebt.cbStruct = sizeof( EDITBALLOONTIP );
-				ebt.pszText = GetString ("PASSWORD_MAXLENGTH_REACHED");
-				ebt.pszTitle = lpszTitle;
-				ebt.ttiIcon = TTI_ERROR_LARGE;    // tooltip warning icon
-
-				SendMessage(hwnd, EM_SHOWBALLOONTIP, 0, (LPARAM)&ebt);
-
-				MessageBeep (0xFFFFFFFF);
-			}
-			else
-				 SendMessage(hwnd, EM_HIDEBALLOONTIP, 0, 0);
-		}
+		HandlePasswordEditWmChar (hwnd, wParam);
 		break;
 	}
 
@@ -2630,6 +2664,16 @@ uint32 ReadDriverConfigurationFlags ()
 	DWORD configMap;
 
 	if (!ReadLocalMachineRegistryDword (L"SYSTEM\\CurrentControlSet\\Services\\veracrypt", TC_DRIVER_CONFIG_REG_VALUE_NAME, &configMap))
+		configMap = 0;
+
+	return configMap;
+}
+
+uint32 ReadServiceConfigurationFlags ()
+{
+	DWORD configMap;
+
+	if (!ReadLocalMachineRegistryDword (L"SYSTEM\\CurrentControlSet\\Services\\" TC_SYSTEM_FAVORITES_SERVICE_NAME, TC_SYSTEM_FAVORITES_SERVICE_NAME L"Config", &configMap))
 		configMap = 0;
 
 	return configMap;
@@ -5578,13 +5622,11 @@ static BOOL PerformBenchmark(HWND hBenchDlg, HWND hwndDlg)
 	BYTE *lpTestBuffer = NULL;
 	PCRYPTO_INFO ci = NULL;
 	UINT64_STRUCT startDataUnitNo;
-	SYSTEM_INFO sysInfo = {0};
-
-	GetSystemInfo (&sysInfo);
+	size_t cpuCount = GetCpuCount(NULL);
 	startDataUnitNo.Value = 0;
 
 	/* set priority to critical only when there are 2 or more CPUs on the system */
-	if (sysInfo.dwNumberOfProcessors > 1 && (benchmarkType != BENCHMARK_TYPE_ENCRYPTION))
+	if (cpuCount > 1 && (benchmarkType != BENCHMARK_TYPE_ENCRYPTION))
 		SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
 
 	ci = crypto_open ();
@@ -6023,13 +6065,12 @@ BOOL CALLBACK BenchmarkDlgProc (HWND hwndDlg, UINT msg, WPARAM wParam, LPARAM lP
 				Warning ("DISABLED_HW_AES_AFFECTS_PERFORMANCE", hwndDlg);
 			}
 
-			SYSTEM_INFO sysInfo;
-			GetSystemInfo (&sysInfo);
+			size_t cpuCount = GetCpuCount (NULL);
 
 			size_t nbrThreads = GetEncryptionThreadCount();
 
 			wchar_t nbrThreadsStr [300];
-			if (sysInfo.dwNumberOfProcessors < 2)
+			if (cpuCount < 2)
 			{
 				StringCbCopyW (nbrThreadsStr, sizeof(nbrThreadsStr), GetString ("NOT_APPLICABLE_OR_NOT_AVAILABLE"));
 			}
@@ -6046,8 +6087,8 @@ BOOL CALLBACK BenchmarkDlgProc (HWND hwndDlg, UINT msg, WPARAM wParam, LPARAM lP
 
 			ToHyperlink (hwndDlg, IDC_PARALLELIZATION_LABEL_LINK);
 
-			if (nbrThreads < min (sysInfo.dwNumberOfProcessors, GetMaxEncryptionThreadCount())
-				&& sysInfo.dwNumberOfProcessors > 1)
+			if (nbrThreads < min (cpuCount, GetMaxEncryptionThreadCount())
+				&& cpuCount > 1)
 			{
 				Warning ("LIMITED_THREAD_COUNT_AFFECTS_PERFORMANCE", hwndDlg);
 			}
@@ -10069,12 +10110,6 @@ wchar_t GetSystemDriveLetter (void)
 
 void TaskBarIconDisplayBalloonTooltip (HWND hwnd, wchar_t *headline, wchar_t *text, BOOL warning)
 {
-	if (nCurrentOS == WIN_2000)
-	{
-		MessageBoxW (MainDlg, text, headline, warning ? MB_ICONWARNING : MB_ICONINFORMATION);
-		return;
-	}
-
 	NOTIFYICONDATAW tnid;
 
 	ZeroMemory (&tnid, sizeof (tnid));
@@ -11647,6 +11682,17 @@ BOOL CALLBACK SecurityTokenPasswordDlgProc (HWND hwndDlg, UINT msg, WPARAM wPara
 
 			SetForegroundWindow (hwndDlg);
 			SetFocus (GetDlgItem (hwndDlg, IDC_TOKEN_PASSWORD));
+
+			if (!bSecureDesktopOngoing)
+			{
+				PasswordEditDropTarget* pTarget = new PasswordEditDropTarget ();
+				if (pTarget->Register (hwndDlg))
+				{
+					SetWindowLongPtr (hwndDlg, DWLP_USER, (LONG_PTR) pTarget);
+				}
+				else
+					delete pTarget;
+			}
 		}
 		return 0;
 
@@ -11682,6 +11728,19 @@ BOOL CALLBACK SecurityTokenPasswordDlgProc (HWND hwndDlg, UINT msg, WPARAM wPara
 			EndDialog (hwndDlg, lw);
 		}
 		return 1;
+
+	case WM_NCDESTROY:
+		{
+			/* unregister drap-n-drop support */
+			PasswordEditDropTarget* pTarget = (PasswordEditDropTarget*) GetWindowLongPtr (hwndDlg, DWLP_USER);
+			if (pTarget)
+			{
+				SetWindowLongPtr (hwndDlg, DWLP_USER, (LONG_PTR) 0);
+				pTarget->Revoke ();
+				pTarget->Release();
+			}
+		}
+		return 0;
 	}
 
 	return 0;
@@ -13192,11 +13251,21 @@ BOOL GetPassword (HWND hwndDlg, UINT ctrlID, char* passValue, int bufSize, BOOL 
 		passValue [0] = 0;
 		if (bShowError)
 		{
-			SetFocus (GetDlgItem(hwndDlg, ctrlID));
 			if (GetLastError () == ERROR_INSUFFICIENT_BUFFER)
-				Error ((bufSize == (MAX_LEGACY_PASSWORD + 1))? "LEGACY_PASSWORD_UTF8_TOO_LONG": "PASSWORD_UTF8_TOO_LONG", hwndDlg);
+			{
+				DWORD dwTextSize = (DWORD) wcslen (GetString ("PASSWORD_UTF8_TOO_LONG")) + 16;
+				WCHAR* szErrorText = (WCHAR*) malloc (dwTextSize * sizeof (WCHAR));
+
+				// bufSize is equal to maximum password length plus one
+				StringCchPrintf (szErrorText, dwTextSize, GetString ("PASSWORD_UTF8_TOO_LONG"), (bufSize - 1));
+
+				ErrorDirect (szErrorText, hwndDlg);
+
+				free (szErrorText);
+			}
 			else
 				Error ("PASSWORD_UTF8_INVALID", hwndDlg);
+			SetFocus (GetDlgItem(hwndDlg, ctrlID));
 		}
 	}
 
@@ -13862,7 +13931,7 @@ BOOL VerifyModuleSignature (const wchar_t* path)
 	WVTData.dwProvFlags         = WTD_REVOCATION_CHECK_NONE | WTD_CACHE_ONLY_URL_RETRIEVAL;
 
 	hResult = WinVerifyTrustFn(0, &gActionID, &WVTData);
-	if (SUCCEEDED (hResult))
+	if (0 == hResult)
 	{
 		PCRYPT_PROVIDER_DATA pProviderData = WTHelperProvDataFromStateDataFn (WVTData.hWVTStateData);
 		if (pProviderData)
@@ -13876,7 +13945,9 @@ BOOL VerifyModuleSignature (const wchar_t* path)
 					BYTE hashVal[64];
 					sha512 (hashVal, pProviderCert->pCert->pbCertEncoded, pProviderCert->pCert->cbCertEncoded);
 
-					if (0 ==  memcmp (hashVal, gpbSha1CodeSignCertFingerprint, 64))
+					if (	(0 ==  memcmp (hashVal, gpbSha1CodeSignCertFingerprint, 64))
+						||	(0 ==  memcmp (hashVal, gpbSha256CodeSignCertFingerprint, 64))
+						)
 					{
 						bResult = TRUE;
 					}
@@ -14286,10 +14357,12 @@ BOOL IsElevated()
 
 // This function always loads a URL in a non-privileged mode
 // If current process has admin privileges, we execute the command "rundll32 url.dll,FileProtocolHandler URL" as non-elevated
-// Use this security mechanism only starting from Windows Vista
+// Use this security mechanism only starting from Windows Vista and only if we can get the window of the Shell's desktop since
+// we rely on the Shell to be already running in a non-privileges mode. If the Shell is not running or if it has been modified,
+// then we can't protect the user in such non standard environment
 void SafeOpenURL (LPCWSTR szUrl)
 {
-	if (IsOSAtLeast (WIN_VISTA) && IsAdmin () && IsElevated())
+	if (IsOSAtLeast (WIN_VISTA) && IsAdmin () && IsElevated() && GetShellWindow())
 	{
 		WCHAR szRunDllPath[TC_MAX_PATH];
 		WCHAR szUrlDllPath[TC_MAX_PATH];
@@ -14381,3 +14454,582 @@ void GetAppRandomSeed (unsigned char* pbRandSeed, size_t cbRandSeed)
 	burn (&tctx, sizeof(tctx));
 }
 #endif
+
+/*
+ * GetBitLockerEncryptionStatus: retuns the BitLocker encryption status of a given drive.
+ */
+
+typedef enum BitLockerProtectionState
+{
+    BL_State_FullyDecrypted = 0,
+    BL_State_FullyEncrypted = 1, 
+    BL_State_EncryptionInProgress = 2,
+    BL_State_DecryptionInProgress = 3,
+    BL_State_EncryptionSuspended = 4,
+    BL_State_DecryptionSuspended = 5,
+    BL_State_FullyEncryptedWipeInProgress = 6,
+    BL_State_FullyEncryptedWipeSuspended = 7
+} BitLockerProtectionState;
+
+typedef HRESULT (WINAPI *SHCreateItemFromParsingNameFn)(
+    PCWSTR   pszPath,
+    IBindCtx* pbc,
+    REFIID   riid,
+    void** ppv
+);
+
+typedef HRESULT (WINAPI *PSGetPropertyKeyFromNameFn)(
+    _In_ PCWSTR pszName,
+    _Out_ PROPERTYKEY* ppropkey);
+
+
+/*
+   Code derived from https://stackoverflow.com/questions/23841973/how-to-tell-if-drive-is-bitlocker-encrypted-without-admin-privilege/47192128#47192128
+*/
+BitLockerEncryptionStatus GetBitLockerEncryptionStatus(WCHAR driveLetter)
+{    
+    HRESULT hr;
+    BitLockerEncryptionStatus blStatus = BL_Status_Unknown;
+    wchar_t szDllPath[MAX_PATH] = { 0 };
+    HMODULE hShell32 = NULL;
+
+    CoInitialize(NULL);
+
+    if (GetSystemDirectory(szDllPath, MAX_PATH))
+        StringCchCatW(szDllPath, MAX_PATH, L"\\Shell32.dll");
+    else
+        StringCchCopyW(szDllPath, MAX_PATH, L"C:\\Windows\\System32\\Shell32.dll");
+
+    hShell32 = LoadLibrary(szDllPath);
+    if (hShell32)
+    {
+        SHCreateItemFromParsingNameFn SHCreateItemFromParsingNamePtr = (SHCreateItemFromParsingNameFn)GetProcAddress(hShell32, "SHCreateItemFromParsingName");
+        if (SHCreateItemFromParsingNamePtr)
+        {
+            HMODULE hPropsys = NULL;
+
+            if (GetSystemDirectory(szDllPath, MAX_PATH))
+                StringCchCatW(szDllPath, MAX_PATH, L"\\Propsys.dll");
+            else
+                StringCchCopyW(szDllPath, MAX_PATH, L"C:\\Windows\\System32\\Propsys.dll");
+
+            hPropsys = LoadLibrary(szDllPath);
+            if (hPropsys)
+            {
+                PSGetPropertyKeyFromNameFn PSGetPropertyKeyFromNamePtr = (PSGetPropertyKeyFromNameFn)GetProcAddress(hPropsys, "PSGetPropertyKeyFromName");
+                if (PSGetPropertyKeyFromNamePtr)
+                {
+					WCHAR parsingName[3] = {driveLetter, L':', 0};
+                    IShellItem2* drive = NULL;
+                    hr = SHCreateItemFromParsingNamePtr(parsingName, NULL, IID_PPV_ARGS(&drive));
+                    if (SUCCEEDED(hr)) {
+                        PROPERTYKEY pKey;
+                        hr = PSGetPropertyKeyFromNamePtr(L"System.Volume.BitLockerProtection", &pKey);
+                        if (SUCCEEDED(hr)) {
+                            PROPVARIANT prop;
+                            PropVariantInit(&prop);
+                            hr = drive->GetProperty(pKey, &prop);
+                            if (SUCCEEDED(hr)) {
+                                int status = prop.intVal;
+                                if (status == BL_State_FullyEncrypted || status == BL_State_DecryptionInProgress || status == BL_State_DecryptionSuspended)
+                                    blStatus = BL_Status_Protected;
+                                else
+                                    blStatus = BL_Status_Unprotected;
+                            }
+                        }
+                    }
+                    if (drive)
+                        drive->Release();
+                }
+
+                FreeLibrary(hPropsys);
+            }
+        }
+        else
+        {
+            blStatus = BL_Status_Unprotected; // before Vista, there was no Bitlocker
+        }
+
+        FreeLibrary(hShell32);
+    }
+
+    CoUninitialize();
+    return blStatus;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////
+
+static CLIPFORMAT g_supportedFormats[] = { CF_UNICODETEXT, CF_TEXT, CF_OEMTEXT};
+
+//*************************************************************
+//	GenericDropTarget
+//*************************************************************
+GenericDropTarget::GenericDropTarget(CLIPFORMAT* pFormats, size_t count)
+	:	m_DropTargetWnd(NULL),
+		m_dwRefCount(1),
+		m_KeyState(0L),
+		m_Data(NULL)
+{
+	m_DropPoint.x = 0;
+	m_DropPoint.y = 0;
+
+	if (pFormats && count)
+	{
+		for (size_t i = 0; i < count; i++)
+		{
+			m_SupportedFormat.push_back (pFormats[i]);
+		}
+	}
+}
+
+GenericDropTarget::~GenericDropTarget()
+{
+}
+
+HRESULT GenericDropTarget::QueryInterface(REFIID iid, void **ppvObject)
+{
+	if(ppvObject == NULL)
+		return E_FAIL;
+	
+    if (iid == IID_IUnknown)
+    {
+		AddRef();
+		(*ppvObject) = this;
+		return S_OK;
+    }
+	//	compare guids fast and dirty
+    if (IsEqualGUID (iid, IID_IDropTarget))
+	{
+		AddRef();
+		(*ppvObject) = this;
+		return S_OK;
+	}
+
+	return E_FAIL;
+}
+
+ULONG GenericDropTarget::AddRef(void)
+{
+	return (ULONG) InterlockedIncrement (&m_dwRefCount);
+}
+
+ULONG GenericDropTarget::Release(void)
+{
+	if (InterlockedDecrement (&m_dwRefCount) == 0)
+	{
+		delete this;
+		return 0;
+	}
+	else
+		return (ULONG) m_dwRefCount;
+}
+
+//*************************************************************
+//	Register
+//		Called by whom implements us so we can serve
+//*************************************************************
+BOOL GenericDropTarget::Register(HWND hWnd)
+{
+	if(NULL == hWnd)
+		return E_FAIL;
+
+	OleInitialize(NULL);
+
+	//	required: these MUST be strong locked
+	CoLockObjectExternal(this, TRUE, 0);
+
+	//	this is ok, we have it
+	DWORD hRes = ::RegisterDragDrop(hWnd, this);
+	if(SUCCEEDED(hRes))
+	{
+		//	keep
+		m_DropTargetWnd = hWnd;
+		return TRUE;
+	}
+
+	//	unlock
+	CoLockObjectExternal(this, FALSE, 0);
+
+	// bye bye COM
+	OleUninitialize();
+
+	//	wont accept data now
+	return FALSE;
+}
+
+//*************************************************************
+//	Revoke
+//		Unregister us as a target
+//*************************************************************
+void GenericDropTarget::Revoke()
+{
+	if(NULL == m_DropTargetWnd)
+		return;
+
+	RevokeDragDrop(m_DropTargetWnd);
+
+	m_DropTargetWnd = NULL;
+
+	//	unlock
+	CoLockObjectExternal(this, FALSE, 0);
+
+	// bye bye COM
+	OleUninitialize();
+}
+ 
+//*************************************************************
+//	DragEnter
+//*************************************************************
+HRESULT	GenericDropTarget::DragEnter(struct IDataObject *pDataObject, unsigned long grfKeyState, struct _POINTL pMouse, unsigned long * pDropEffect)
+{
+	if(pDataObject == NULL)
+		return E_FAIL;	//	must have data
+
+	//	keep point
+	m_DropPoint.x = pMouse.x;
+	m_DropPoint.y = pMouse.y;
+
+	//	keep key
+	m_KeyState = grfKeyState;
+
+	//	call top
+	*pDropEffect = GotEnter();
+
+	return S_OK;
+}
+
+//*************************************************************
+//	DragOver
+//		Coming over!
+//*************************************************************
+HRESULT	GenericDropTarget::DragOver(unsigned long grfKeyState, struct _POINTL pMouse, unsigned long *pEffect)
+{
+	//	keep point
+	m_DropPoint.x = pMouse.x;
+	m_DropPoint.y = pMouse.y;
+
+	//	keep key
+	m_KeyState = grfKeyState;
+
+	//	call top
+	*pEffect = GotDrag();
+
+	return S_OK;
+}
+
+//*************************************************************
+//	DragLeave
+//		Free! At last!
+//*************************************************************
+HRESULT	GenericDropTarget::DragLeave(void)
+{
+	GotLeave();
+
+	return S_OK;
+}
+
+//*************************************************************
+//	Drop
+//*************************************************************
+HRESULT	GenericDropTarget::Drop(struct IDataObject *pDataObject, unsigned long grfKeyState, struct _POINTL pMouse, unsigned long *pdwEffect)
+{
+	if(NULL == pDataObject)
+		return E_FAIL;
+
+	//	do final effect
+	*pdwEffect = DROPEFFECT_COPY;
+	
+	//	Check the data
+	FORMATETC iFormat;
+	ZeroMemory(&iFormat, sizeof(FORMATETC));
+
+	STGMEDIUM iMedium;
+	ZeroMemory(&iMedium, sizeof(STGMEDIUM));
+
+	HRESULT hRes;
+	size_t i;
+	bool bFound = false;
+
+	for (i = 0; i < m_SupportedFormat.size(); i++)
+	{
+		//	data
+		iFormat.cfFormat = m_SupportedFormat[i];	
+		iFormat.dwAspect = DVASPECT_CONTENT;
+		iFormat.lindex = -1;			//	give me all baby
+		iFormat.tymed = TYMED_HGLOBAL;	//	want mem
+
+		hRes = pDataObject->GetData(&iFormat, &iMedium);
+		if(SUCCEEDED(hRes))
+		{
+			bFound = true;
+			break;
+		}
+	}
+
+	if (!bFound)
+		return hRes;
+
+	//	we have the data, get it		
+	BYTE *iMem = (BYTE *)::GlobalLock(iMedium.hGlobal);
+
+	//	pass over
+	m_Data = iMem;
+	
+	//	keep point
+	m_DropPoint.x = pMouse.x;
+	m_DropPoint.y = pMouse.y;
+
+	//	keep key
+	m_KeyState = grfKeyState;
+
+	//	notify parent of drop
+	GotDrop(m_SupportedFormat[i]);
+
+	::GlobalUnlock(iMedium.hGlobal);
+
+	//	free data
+	if(iMedium.pUnkForRelease != NULL)
+		iMedium.pUnkForRelease->Release();
+
+	return S_OK;
+}
+
+//*************************************************************
+//	Stub implementation
+//		Real stuff would be done in parent
+//*************************************************************
+void GenericDropTarget::GotDrop(CLIPFORMAT format)
+{
+}
+
+DWORD GenericDropTarget::GotDrag(void)
+{
+	return DROPEFFECT_LINK;
+}
+
+void GenericDropTarget::GotLeave(void)
+{
+}
+
+DWORD GenericDropTarget::GotEnter(void)
+{
+	return DROPEFFECT_LINK;
+}
+
+// ************************************************************
+//	PasswordEditDropTarget
+//		Constructor
+// ************************************************************
+PasswordEditDropTarget::PasswordEditDropTarget() : GenericDropTarget (g_supportedFormats, ARRAYSIZE (g_supportedFormats))
+{
+
+}
+
+// ************************************************************
+//	GotDrag
+
+// ************************************************************
+DWORD PasswordEditDropTarget::GotDrag(void)
+{
+	return GotEnter();  
+}
+
+// ************************************************************
+//	GotLeave
+// ************************************************************
+void PasswordEditDropTarget::GotLeave(void)
+{
+}
+
+// ************************************************************
+//	GotEnter
+// ************************************************************
+DWORD PasswordEditDropTarget::GotEnter(void)
+{
+	TCHAR szClassName[64];
+	DWORD dwStyles;
+	int maxLen;
+	HWND hChild = WindowFromPoint (m_DropPoint);
+	// check that we are on password edit control (we use maximum length to correctly identify password fields since they don't always have ES_PASSWORD style (if the the user checked show password)
+	if (hChild && GetClassName (hChild, szClassName, ARRAYSIZE (szClassName)) && (0 == _tcsicmp (szClassName, _T("EDIT")))
+		&& (dwStyles = GetWindowLong (hChild, GWL_STYLE)) && !(dwStyles & ES_NUMBER)
+		&& (maxLen = (int) SendMessage (hChild, EM_GETLIMITTEXT, 0, 0)) && (maxLen == MAX_PASSWORD || maxLen == MAX_LEGACY_PASSWORD)
+		)
+	{
+		return DROPEFFECT_COPY; 
+	}
+
+	return DROPEFFECT_LINK;
+}
+
+// ************************************************************
+//	GotDrop
+//		Called if we have a drop text drop here.
+//	
+// ************************************************************
+void PasswordEditDropTarget::GotDrop(CLIPFORMAT format)
+{
+	//	value contains the material itself
+	if(m_Data)
+	{
+		TCHAR szClassName[64];
+		DWORD dwStyles;
+		int maxLen;
+		HWND hChild = WindowFromPoint (m_DropPoint);
+		if (hChild && GetClassName (hChild, szClassName, ARRAYSIZE (szClassName)) && (0 == _tcsicmp (szClassName, _T("EDIT")))
+			&& (dwStyles = GetWindowLong (hChild, GWL_STYLE)) && !(dwStyles & ES_NUMBER)
+			&& (maxLen = (int) SendMessage (hChild, EM_GETLIMITTEXT, 0, 0)) && (maxLen == MAX_PASSWORD || maxLen == MAX_LEGACY_PASSWORD)
+			)
+		{
+			WCHAR* wszText;
+			int wlen;
+			bool bFree = false;
+			//	get the text
+			if (format == CF_UNICODETEXT)
+			{
+				wszText = (WCHAR *)m_Data;			
+			}
+			else
+			{
+				char *iText = (char *)m_Data;
+				wlen = MultiByteToWideChar ((format == CF_OEMTEXT)? CP_OEMCP : CP_ACP, 0, iText, -1, NULL, 0);
+				wszText = new WCHAR[wlen];
+				if (wszText)
+				{
+					wlen = MultiByteToWideChar (CP_ACP, 0, iText, -1, wszText, wlen);
+					bFree = true;
+				}
+			}
+
+			WCHAR* pchData = wszText;
+			int txtlen = 0;
+			bool bTruncated = false;
+
+			// remove any appended \r or \n
+			while (*pchData)
+			{
+				if (*pchData == '\r' || *pchData == '\n')
+					break;
+				else
+				{
+					txtlen++;
+					pchData++;
+				}
+			}
+
+			if (txtlen)
+			{
+				if (txtlen > maxLen)
+				{
+					bTruncated = true;
+					txtlen = maxLen;
+				}
+
+				SetFocus (hChild);
+
+				wszText[txtlen] = 0;
+				SetWindowText(hChild , wszText);
+
+				if (bTruncated)
+				{
+					EDITBALLOONTIP ebt;
+					DWORD dwTextSize = (DWORD) wcslen (GetString ("PASSWORD_PASTED_TRUNCATED")) + 16;
+					WCHAR* szErrorText = (WCHAR*) malloc (dwTextSize * sizeof (WCHAR));
+
+					StringCchPrintf (szErrorText, dwTextSize, GetString ("PASSWORD_PASTED_TRUNCATED"), maxLen);
+
+					ebt.cbStruct = sizeof( EDITBALLOONTIP );
+					ebt.pszText = szErrorText;
+					ebt.pszTitle = lpszTitle;
+					ebt.ttiIcon = TTI_WARNING_LARGE;    // tooltip warning icon
+
+					SendMessage(hChild, EM_SHOWBALLOONTIP, 0, (LPARAM)&ebt);
+
+					MessageBeep (0xFFFFFFFF);
+
+					free (szErrorText);
+				}
+			}
+
+			if (bFree)
+			{
+				burn (wszText, wlen * sizeof (WCHAR));
+				delete [] wszText;
+			}
+		}
+	}
+}
+
+
+/*
+ * Query the status of Hibernate and Fast Startup
+ */
+
+typedef BOOLEAN (WINAPI *GetPwrCapabilitiesFn)(
+  PSYSTEM_POWER_CAPABILITIES lpspc
+);
+
+BOOL GetHibernateStatus (BOOL& bHibernateEnabled, BOOL& bHiberbootEnabled)
+{
+	wchar_t szPowrProfPath[MAX_PATH] = {0};
+	HMODULE hPowrProf = NULL;
+	BOOL bResult = FALSE;
+
+	bHibernateEnabled = bHiberbootEnabled = FALSE;
+
+	if (GetSystemDirectory(szPowrProfPath, MAX_PATH))
+		StringCchCatW (szPowrProfPath, MAX_PATH, L"\\PowrProf.dll");
+	else
+		StringCchCopyW (szPowrProfPath, MAX_PATH, L"C:\\Windows\\System32\\PowrProf.dll");
+
+	hPowrProf = LoadLibrary (szPowrProfPath);
+	if (hPowrProf)
+	{
+		GetPwrCapabilitiesFn GetPwrCapabilitiesPtr = (GetPwrCapabilitiesFn) GetProcAddress (hPowrProf, "GetPwrCapabilities");
+		if ( GetPwrCapabilitiesPtr)
+		{
+			SYSTEM_POWER_CAPABILITIES spc;
+			BOOLEAN bRet = GetPwrCapabilitiesPtr (&spc);
+			if (bRet)
+			{
+				DWORD dwHibernateEnabled = 0;
+				DWORD dwHiberbootEnabled = 0;
+
+				if (spc.SystemS4)
+				{
+					dwHibernateEnabled = 1;
+					if(!ReadLocalMachineRegistryDword (L"SYSTEM\\CurrentControlSet\\Control\\Power", L"HibernateEnabled", &dwHibernateEnabled))
+					{
+						// starting from Windows 10 1809 (Build 17763), HibernateEnabledDefault is used when HibernateEnabled is absent
+						if (IsOSVersionAtLeast (WIN_10, 0) && CurrentOSBuildNumber >= 17763)
+							ReadLocalMachineRegistryDword (L"SYSTEM\\CurrentControlSet\\Control\\Power", L"HibernateEnabledDefault", &dwHibernateEnabled);
+					}
+				}
+
+				// check if Fast Startup / Hybrid Boot is enabled
+				if (IsOSVersionAtLeast (WIN_8, 0) && spc.spare2[0])
+				{
+					dwHiberbootEnabled = 1;
+					ReadLocalMachineRegistryDword (L"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Power", L"HiberbootEnabled", &dwHiberbootEnabled);
+				}
+
+				if (dwHibernateEnabled)
+					bHibernateEnabled = TRUE;
+				else
+					bHibernateEnabled = FALSE;
+
+				if (dwHiberbootEnabled)
+					bHiberbootEnabled = TRUE;
+				else
+					bHiberbootEnabled = FALSE;
+
+				bResult = TRUE;
+			}
+		}
+
+		FreeLibrary (hPowrProf);
+	}
+
+	return bResult;
+}
+

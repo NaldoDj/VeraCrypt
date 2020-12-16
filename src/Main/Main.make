@@ -102,11 +102,7 @@ endif
 
 #------ FUSE configuration ------
 
-ifeq "$(PLATFORM)" "MacOSX"
-FUSE_LIBS = $(shell pkg-config osxfuse --libs)
-else
 FUSE_LIBS = $(shell pkg-config fuse --libs)
-endif
 
 #------ Executable ------
 
@@ -254,6 +250,8 @@ prepare: $(APPNAME)
 	chmod +x $(BASE_DIR)/Setup/Linux/usr/bin/$(APPNAME)-uninstall.sh
 	cp $(BASE_DIR)/License.txt $(BASE_DIR)/Setup/Linux/usr/share/doc/$(APPNAME)/License.txt
 	cp $(BASE_DIR)/../doc/html/* "$(BASE_DIR)/Setup/Linux/usr/share/doc/$(APPNAME)/HTML"
+	mkdir -p $(BASE_DIR)/Setup/Linux/usr/share/veracrypt/languages
+	cp -r $(BASE_DIR)/../Translations/* $(BASE_DIR)/Setup/Linux/usr/share/veracrypt/languages/
 
 ifndef TC_NO_GUI
 	mkdir -p $(BASE_DIR)/Setup/Linux/usr/share/applications

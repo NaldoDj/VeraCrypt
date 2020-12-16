@@ -420,8 +420,10 @@ static void WipePasswordsAndKeyfiles (bool bFull)
 	// Attempt to wipe passwords stored in the input field buffers
 	wmemset (tmp, L'X', MAX_PASSWORD);
 	tmp [MAX_PASSWORD] = 0;
-	SetWindowText (hPasswordInputField, tmp);
-	SetWindowText (hVerifyPasswordInputField, tmp);
+	if (hPasswordInputField)
+		SetWindowText (hPasswordInputField, tmp);
+	if (hVerifyPasswordInputField)
+		SetWindowText (hVerifyPasswordInputField, tmp);
 
 	burn (&szVerify[0], sizeof (szVerify));
 	burn (&volumePassword, sizeof (volumePassword));
@@ -436,8 +438,10 @@ static void WipePasswordsAndKeyfiles (bool bFull)
 		burn (&outerVolumePim, sizeof (outerVolumePim));
 	}
 
-	SetWindowText (hPasswordInputField, L"");
-	SetWindowText (hVerifyPasswordInputField, L"");
+	if (hPasswordInputField)
+		SetWindowText (hPasswordInputField, L"");
+	if (hVerifyPasswordInputField)
+		SetWindowText (hVerifyPasswordInputField, L"");
 
 	KeyFileRemoveAll (&FirstKeyFile);
 	KeyFileRemoveAll (&defaultKeyFilesParam.FirstKeyFile);
@@ -4327,6 +4331,8 @@ BOOL CALLBACK PageDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 				/* make autodetection the default */
 				SendMessage (hComboBox, CB_SETCURSEL, 0, 0);
 
+				hPasswordInputField = GetDlgItem (hwndDlg, IDC_PASSWORD_DIRECT);
+				hVerifyPasswordInputField = NULL;
 				ToNormalPwdField (hwndDlg, IDC_PASSWORD_DIRECT);
 
 				SetPassword (hwndDlg, IDC_PASSWORD_DIRECT, szRawPassword);
@@ -5627,8 +5633,24 @@ BOOL CALLBACK PageDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 
 		if (hw == CBN_EDITCHANGE && nCurPageNo == VOLUME_LOCATION_PAGE)
 		{
+			BOOL bValidEntry = (GetWindowTextLength (GetDlgItem (hCurPage, IDC_COMBO_BOX)) > 0)? TRUE : FALSE;
+
+			if (bValidEntry && !bDevice)
+			{
+				/* check that the entered path is not for an existing directory */
+				WCHAR szEnteredFilePath[TC_MAX_PATH + 1] = {0};
+				GetWindowTextW (GetDlgItem (hCurPage, IDC_COMBO_BOX), szEnteredFilePath, ARRAYSIZE (szEnteredFilePath));
+				RelativePath2Absolute (szEnteredFilePath);
+
+				DWORD dwAttr = GetFileAttributes (szEnteredFilePath);
+				if ((dwAttr != INVALID_FILE_ATTRIBUTES) && (dwAttr & FILE_ATTRIBUTE_DIRECTORY))
+				{
+					/* this is a directory. Consider it as invalid */
+					bValidEntry = FALSE;
+				}
+			}
 			EnableWindow (GetDlgItem (GetParent (hwndDlg), IDC_NEXT),
-				GetWindowTextLength (GetDlgItem (hCurPage, IDC_COMBO_BOX)) > 0);
+				bValidEntry);
 
 			bDeviceTransformModeChoiceMade = FALSE;
 			bInPlaceEncNonSys = FALSE;
@@ -6371,6 +6393,14 @@ BOOL CALLBACK MainDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 			strcpy (szVerify, "q");
 			strcpy (szRawPassword, "q");
 #endif
+
+			PasswordEditDropTarget* pTarget = new PasswordEditDropTarget ();
+			if (pTarget->Register (hwndDlg))
+			{
+				SetWindowLongPtr (hwndDlg, DWLP_USER, (LONG_PTR) pTarget);
+			}
+			else
+				delete pTarget;
 
 			PostMessage (hwndDlg, TC_APPMSG_PERFORM_POST_WMINIT_TASKS, 0, 0);
 		}
@@ -8439,6 +8469,7 @@ retryCDDriveCheck:
 			else if (nCurPageNo == FORMAT_PAGE)
 			{
 				/* Format start  (the 'Next' button has been clicked on the Format page) */
+				static BOOL g_bFastStartupCheckDone = FALSE;
 
 				if (bVolTransformThreadRunning || bVolTransformThreadToRun)
 					return 1;
@@ -8446,6 +8477,23 @@ retryCDDriveCheck:
 				bVolTransformThreadCancel = FALSE;
 
 				bVolTransformThreadToRun = TRUE;
+
+				// check if Fast Startup is enabled and if yes then offer to disable it
+				if (!g_bFastStartupCheckDone)
+				{
+					BOOL bHibernateEnabled = FALSE, bHiberbootEnabled = FALSE;
+					if (GetHibernateStatus (bHibernateEnabled, bHiberbootEnabled) && bHiberbootEnabled)
+					{
+						if (AskWarnYesNo ("CONFIRM_DISABLE_FAST_STARTUP", hwndDlg) == IDYES)
+						{
+							if (!IsAdmin () && IsUacSupported ())
+								UacWriteLocalMachineRegistryDword (hwndDlg, L"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Power", L"HiberbootEnabled", 0);
+							else
+								WriteLocalMachineRegistryDword (L"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Power", L"HiberbootEnabled", 0);
+						}
+					}
+					g_bFastStartupCheckDone = true;
+				}
 
 				fileSystem = (int) SendMessage (GetDlgItem (hCurPage, IDC_FILESYS), CB_GETITEMDATA,
 					SendMessage (GetDlgItem (hCurPage, IDC_FILESYS), CB_GETCURSEL, 0, 0) , 0);
@@ -8523,13 +8571,7 @@ retryCDDriveCheck:
 
 						if (fileSystem == FILESYS_NTFS || fileSystem == FILESYS_EXFAT)	// The file system may have been changed in the previous block
 						{
-							if (nCurrentOS == WIN_2000)
-							{
-								Error("HIDDEN_VOL_HOST_UNSUPPORTED_FILESYS_WIN2000", hwndDlg);
-								bVolTransformThreadToRun = FALSE;
-								return 1;
-							}
-							else if ((fileSystem == FILESYS_NTFS) && (GetVolumeDataAreaSize (FALSE, nVolumeSize) <= TC_MAX_FAT_SECTOR_COUNT * GetFormatSectorSize())
+							if ((fileSystem == FILESYS_NTFS) && (GetVolumeDataAreaSize (FALSE, nVolumeSize) <= TC_MAX_FAT_SECTOR_COUNT * GetFormatSectorSize())
 								&& AskYesNo("HIDDEN_VOL_HOST_NTFS_ASK", hwndDlg) == IDNO)
 							{
 								bVolTransformThreadToRun = FALSE;
@@ -9001,6 +9043,22 @@ ovf_end:
 	case WM_CLOSE:
 		PostMessage (hwndDlg, TC_APPMSG_FORMAT_USER_QUIT, 0, 0);
 		return 1;
+
+	case WM_NCDESTROY:
+		{
+			hPasswordInputField = NULL;
+			hVerifyPasswordInputField = NULL;
+
+			/* unregister drap-n-drop support */
+			PasswordEditDropTarget* pTarget = (PasswordEditDropTarget*) GetWindowLongPtr (hwndDlg, DWLP_USER);
+			if (pTarget)
+			{
+				SetWindowLongPtr (hwndDlg, DWLP_USER, (LONG_PTR) 0);
+				pTarget->Revoke ();
+				pTarget->Release();
+			}
+		}
+		return 0;
 	}
 
 	return 0;
@@ -9714,12 +9772,6 @@ int AnalyzeHiddenVolumeHost (HWND hwndDlg, int *driveNo, __int64 hiddenVolHostSi
 		// NTFS
 		bool bIsNtfs = (0 == wcsncmp (szFileSystemNameBuffer, L"NTFS", 4));
 
-		if (nCurrentOS == WIN_2000)
-		{
-			Error("HIDDEN_VOL_HOST_UNSUPPORTED_FILESYS_WIN2000", hwndDlg);
-			return 0;
-		}
-
 		if (bIsNtfs && bHiddenVolDirect && GetVolumeDataAreaSize (FALSE, hiddenVolHostSize) <= TC_MAX_FAT_SECTOR_COUNT * GetFormatSectorSize())
 			Info ("HIDDEN_VOL_HOST_NTFS", hwndDlg);
 
@@ -9750,7 +9802,7 @@ int AnalyzeHiddenVolumeHost (HWND hwndDlg, int *driveNo, __int64 hiddenVolHostSi
 	{
 		// Unsupported file system
 
-		Error ((nCurrentOS == WIN_2000) ? "HIDDEN_VOL_HOST_UNSUPPORTED_FILESYS_WIN2000" : "HIDDEN_VOL_HOST_UNSUPPORTED_FILESYS", hwndDlg);
+		Error ("HIDDEN_VOL_HOST_UNSUPPORTED_FILESYS", hwndDlg);
 		return 0;
 	}
 
