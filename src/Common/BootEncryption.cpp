@@ -796,8 +796,6 @@ namespace VeraCrypt
 
 		if (Elevated)
 		{
-			DWORD bytesRead;
-
 			Elevator::ReadWriteFile (false, IsDevice, Path, buffer, FilePointerPosition, size, &bytesRead);
 			FilePointerPosition += bytesRead;
 			return bytesRead;
@@ -5173,6 +5171,9 @@ namespace VeraCrypt
 		if (CurrentOSMajor == 6 && CurrentOSMinor == 0 && CurrentOSServicePack < 1)
 			throw ErrorException ("SYS_ENCRYPTION_UNSUPPORTED_ON_VISTA_SP0", SRC_POS);
 
+		if (IsARM())
+			throw ErrorException ("SYS_ENCRYPTION_UNSUPPORTED_ON_CURRENT_OS", SRC_POS);
+
 		if (IsNonInstallMode())
 			throw ErrorException ("FEATURE_REQUIRES_INSTALLATION", SRC_POS);
 
@@ -5187,7 +5188,7 @@ namespace VeraCrypt
 		if (SystemDriveIsDynamic())
 			throw ErrorException ("SYSENC_UNSUPPORTED_FOR_DYNAMIC_DISK", SRC_POS);
 
-		if (!config.SystemPartition.IsGPT && (config.InitialUnallocatedSpace < TC_BOOT_LOADER_AREA_SIZE))
+		if (config.InitialUnallocatedSpace < TC_BOOT_LOADER_AREA_SIZE)
 			throw ErrorException ("NO_SPACE_FOR_BOOT_LOADER", SRC_POS);
 
 		DISK_GEOMETRY_EX geometry = GetDriveGeometry (config.DriveNumber);
